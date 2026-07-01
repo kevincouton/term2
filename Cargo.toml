@@ -8,6 +8,7 @@ edition = "2021"
 authors = ["Kevin Couton <kevin.couton@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/kevincouton/term2"
+publish = false
 
 [workspace.dependencies]
 term2-core = { path = "crates/term2-core" }
