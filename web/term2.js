@@ -1,4 +1,7 @@
 async function startTerm2() {
+  const params = new URLSearchParams(window.location.search);
+  const sessionId = params.get('id');
+
   const term = new Terminal({
     cursorBlink: true,
     fontFamily: 'JetBrains Mono, Fira Code, monospace',
@@ -12,30 +15,37 @@ async function startTerm2() {
 
   window.addEventListener('resize', () => fitAddon.fit());
 
-  term.writeln('\x1b[90mConnecting to Term2...\x1b[0m');
-
-  const response = await fetch('/api/v1/sessions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command: '/bin/sh' }),
-  });
-
-  if (!response.ok) {
-    term.writeln('\x1b[31mFailed to create session.\x1b[0m');
+  if (!sessionId) {
+    term.writeln('\x1b[31mNo session id provided.\x1b[0m');
+    term.writeln('\x1b[90mReturn to the portal to create or select a session.\x1b[0m');
     return;
   }
 
-  const { ws_url } = await response.json();
+  term.writeln('\x1b[90mConnecting to session…\x1b[0m');
+
+  // Hidden log of raw terminal output for E2E assertions.
+  const e2eLog = document.createElement('pre');
+  e2eLog.id = 'term2-e2e-log';
+  e2eLog.style.display = 'none';
+  e2eLog.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(e2eLog);
+
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${proto}//${location.host}${ws_url}`);
+  const ws = new WebSocket(`${proto}//${location.host}/api/v1/sessions/${encodeURIComponent(sessionId)}/ws`);
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
     term.writeln('\x1b[32mSession connected.\x1b[0m');
+    e2eLog.textContent += '\n[connected]\n';
   };
 
   ws.onmessage = (event) => {
-    term.write(new Uint8Array(event.data));
+    const data = new Uint8Array(event.data);
+    term.write(data);
+    // Strip common ANSI escape sequences for easier text assertions.
+    e2eLog.textContent += new TextDecoder()
+      .decode(data)
+      .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
   };
 
   ws.onclose = () => {

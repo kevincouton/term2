@@ -3,14 +3,170 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Term2</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+  <title>Term2 — Sessions</title>
   <link rel="stylesheet" href="term2.css">
 </head>
 <body>
-  <div id="terminal"></div>
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
-  <script src="term2.js"></script>
+  <div class="portal">
+    <header>
+      <h1>Term2</h1>
+      <span id="user-pill" class="pill">…</span>
+    </header>
+
+    <main>
+      <section class="card">
+        <h2>Create session</h2>
+        <form id="create-form" class="form-row">
+          <input id="session-name" type="text" placeholder="session-name" required pattern="[A-Za-z0-9_-]+" title="letters, numbers, - and _ only">
+          <select id="profile-select" required></select>
+          <button type="submit" class="primary">Launch</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Profiles</h2>
+        <p class="hint">Built-in: bash, zsh (oh-my-zsh), nushell. Custom profiles live under <code>~/.config/term2/profiles/&lt;user&gt;/&lt;name&gt;/</code>.</p>
+        <div id="profiles-list" class="chips"></div>
+      </section>
+
+      <section class="card">
+        <h2>Active sessions</h2>
+        <div id="sessions-toolbar">
+          <button id="refresh-btn" type="button">Refresh</button>
+        </div>
+        <table id="sessions-table" class="sessions">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Profile</th>
+              <th>Created</th>
+              <th>Attached</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p id="empty-state" class="empty">No sessions yet.</p>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        headers: { 'Accept': 'application/json', ...(opts.headers || {}) },
+        ...opts,
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`${opts.method || 'GET'} ${path} → ${res.status} ${text}`);
+      }
+      if (res.status === 204) return null;
+      return res.json();
+    }
+
+    async function loadMe() {
+      const data = await api('/api/v1/me');
+      document.getElementById('user-pill').textContent = data.id || 'anonymous';
+    }
+
+    async function loadProfiles() {
+      const data = await api('/api/v1/profiles');
+      const select = document.getElementById('profile-select');
+      select.innerHTML = '';
+      data.profiles.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.name;
+        opt.textContent = `${p.name} (${p.shell})`;
+        select.appendChild(opt);
+      });
+
+      const chips = document.getElementById('profiles-list');
+      chips.innerHTML = '';
+      data.profiles.forEach(p => {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.textContent = p.name;
+        chip.title = `shell: ${p.shell}`;
+        chips.appendChild(chip);
+      });
+    }
+
+    function formatDate(ts) {
+      if (!ts) return '—';
+      return new Date(ts * 1000).toLocaleString();
+    }
+
+    async function loadSessions() {
+      const data = await api('/api/v1/sessions');
+      const tbody = document.querySelector('#sessions-table tbody');
+      const empty = document.getElementById('empty-state');
+      tbody.innerHTML = '';
+
+      if (!data || data.length === 0) {
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+
+      data.forEach(s => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><code>${escapeHtml(s.name)}</code></td>
+          <td>${escapeHtml(s.profile)}</td>
+          <td>${formatDate(s.created_at)}</td>
+          <td>${s.attached ? 'yes' : 'no'}</td>
+          <td class="actions">
+            <a class="button primary" href="/terminal.html?id=${encodeURIComponent(s.id)}">Open</a>
+            <button type="button" data-id="${escapeHtml(s.id)}" class="danger delete-btn">Kill</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      document.querySelectorAll('.delete-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.id;
+          if (!confirm(`Kill session ${id}?`)) return;
+          await api(`/api/v1/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+          await loadSessions();
+        });
+      });
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    document.getElementById('create-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('session-name').value.trim();
+      const profile = document.getElementById('profile-select').value;
+      await api('/api/v1/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, profile }),
+      });
+      document.getElementById('session-name').value = '';
+      await loadSessions();
+    });
+
+    document.getElementById('refresh-btn').addEventListener('click', loadSessions);
+
+    async function init() {
+      await loadMe();
+      await loadProfiles();
+      await loadSessions();
+    }
+
+    init().catch(err => {
+      console.error(err);
+      alert('Failed to load portal: ' + err.message);
+    });
+  </script>
 </body>
 </html>
