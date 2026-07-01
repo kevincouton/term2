@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc, RwLock};
@@ -41,15 +42,15 @@ pub struct SessionInfo {
     pub attached: bool,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SessionManager {
     // Keeps track of which tmux sessions are currently known so we can
     // reject duplicate friendly names for the same user.
     known: Arc<RwLock<HashMap<String, SessionMetadata>>>,
+    store: PathBuf,
 }
 
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct SessionMetadata {
     user: String,
     name: String,
@@ -57,9 +58,23 @@ struct SessionMetadata {
     created_at: u64,
 }
 
+impl Default for SessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionManager {
     pub fn new() -> Self {
-        Self::default()
+        Self::new_with_store(store_path())
+    }
+
+    pub fn new_with_store(store: PathBuf) -> Self {
+        let known = load_store(&store).unwrap_or_default();
+        Self {
+            known: Arc::new(RwLock::new(known)),
+            store,
+        }
     }
 
     /// Create a new tmux-backed session for `user` named `name` using `profile`.
@@ -109,15 +124,19 @@ impl SessionManager {
         }
 
         let created_at = now_secs();
-        self.known.write().await.insert(
-            tmux_name.clone(),
-            SessionMetadata {
-                user: user.to_string(),
-                name: name.clone(),
-                profile: profile.name.clone(),
-                created_at,
-            },
-        );
+        {
+            let mut known = self.known.write().await;
+            known.insert(
+                tmux_name.clone(),
+                SessionMetadata {
+                    user: user.to_string(),
+                    name: name.clone(),
+                    profile: profile.name.clone(),
+                    created_at,
+                },
+            );
+            let _ = save_store(&self.store, &known);
+        }
 
         Ok(SessionInfo {
             id: tmux_name,
@@ -146,7 +165,7 @@ impl SessionManager {
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         if !output.status.success() {
-            if stderr.contains("no server running") {
+            if stderr.contains("no server running") || stderr.contains("No such file or directory") {
                 return Ok(Vec::new());
             }
             return Err(Error::Tmux(stderr.into_owned()));
@@ -154,36 +173,58 @@ impl SessionManager {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut infos = Vec::new();
-        for line in stdout.lines() {
-            let mut parts = line.splitn(3, '|');
-            let Some(tmux_name) = parts.next() else {
-                continue;
-            };
-            if !tmux_name.starts_with(&prefix) {
-                continue;
+        let mut discovered: Vec<(String, SessionMetadata)> = Vec::new();
+        {
+            let known = self.known.read().await;
+            for line in stdout.lines() {
+                let mut parts = line.splitn(3, '|');
+                let Some(tmux_name) = parts.next() else {
+                    continue;
+                };
+                if !tmux_name.starts_with(&prefix) {
+                    continue;
+                }
+                let created_at = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                let attached = parts.next().map(|s| s == "1").unwrap_or(false);
+                let name = tmux_name
+                    .strip_prefix(&prefix)
+                    .unwrap_or(tmux_name)
+                    .to_string();
+
+                let metadata = known.get(tmux_name).cloned().unwrap_or_else(|| {
+                    discovered.push((
+                        tmux_name.to_string(),
+                        SessionMetadata {
+                            user: user.to_string(),
+                            name: name.clone(),
+                            profile: "bash".to_string(),
+                            created_at,
+                        },
+                    ));
+                    SessionMetadata {
+                        user: user.to_string(),
+                        name: name.clone(),
+                        profile: "bash".to_string(),
+                        created_at,
+                    }
+                });
+
+                infos.push(SessionInfo {
+                    id: tmux_name.to_string(),
+                    name,
+                    profile: metadata.profile,
+                    created_at,
+                    attached,
+                });
             }
-            let created_at = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-            let attached = parts.next().map(|s| s == "1").unwrap_or(false);
-            let name = tmux_name
-                .strip_prefix(&prefix)
-                .unwrap_or(tmux_name)
-                .to_string();
+        }
 
-            let profile = self
-                .known
-                .read()
-                .await
-                .get(tmux_name)
-                .map(|m| m.profile.clone())
-                .unwrap_or_else(|| "bash".to_string());
-
-            infos.push(SessionInfo {
-                id: tmux_name.to_string(),
-                name,
-                profile,
-                created_at,
-                attached,
-            });
+        if !discovered.is_empty() {
+            let mut known = self.known.write().await;
+            for (tmux_name, metadata) in discovered {
+                known.entry(tmux_name).or_insert(metadata);
+            }
+            let _ = save_store(&self.store, &known);
         }
 
         Ok(infos)
@@ -219,7 +260,11 @@ impl SessionManager {
             return Err(Error::Tmux(stderr.into_owned()));
         }
 
-        self.known.write().await.remove(id);
+        {
+            let mut known = self.known.write().await;
+            known.remove(id);
+            let _ = save_store(&self.store, &known);
+        }
         Ok(())
     }
 
@@ -301,6 +346,31 @@ impl SessionManager {
     }
 }
 
+fn store_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("term2")
+        .join("sessions.json")
+}
+
+fn load_store(path: &PathBuf) -> std::io::Result<HashMap<String, SessionMetadata>> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let content = std::fs::read_to_string(path)?;
+    serde_json::from_str(&content)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+fn save_store(path: &PathBuf, known: &HashMap<String, SessionMetadata>) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let content = serde_json::to_string_pretty(known)?;
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
 fn sanitize_name(name: &str) -> String {
     let sanitized: String = name
         .chars()
@@ -340,7 +410,18 @@ fn now_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
+
+    static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_store() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("term2-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let n = STORE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        dir.join(format!("sessions-{n}.json"))
+    }
 
     #[test]
     fn sanitize_name_trims_invalid() {
@@ -350,7 +431,7 @@ mod tests {
 
     #[tokio::test]
     async fn bash_session_can_be_created_and_listed() {
-        let manager = SessionManager::new();
+        let manager = SessionManager::new_with_store(temp_store());
         let registry = ProfileRegistry::new("test-user");
         let profile = registry.get("bash").unwrap();
 
@@ -361,6 +442,10 @@ mod tests {
 
         let list = manager.list("test-user").await.expect("list sessions");
         assert!(list.iter().any(|s| s.id == info.id));
+        assert_eq!(
+            list.iter().find(|s| s.id == info.id).unwrap().profile,
+            "bash"
+        );
 
         manager
             .terminate("test-user", &info.id)
@@ -369,8 +454,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sessions_survive_manager_restart() {
+        let store = temp_store();
+        let registry = ProfileRegistry::new("restart-user");
+        let profile = registry.get("zsh").unwrap();
+
+        let info = {
+            let manager = SessionManager::new_with_store(store.clone());
+            manager
+                .create("restart-user", "survives", &profile, &registry)
+                .await
+                .expect("create zsh session")
+        };
+
+        // Simulate a server restart by creating a brand new SessionManager
+        // pointing at the same store.
+        let new_manager = SessionManager::new_with_store(store);
+        let list = new_manager
+            .list("restart-user")
+            .await
+            .expect("list sessions");
+        let found = list
+            .iter()
+            .find(|s| s.id == info.id)
+            .expect("session still listed");
+        assert_eq!(found.profile, "zsh");
+
+        new_manager
+            .terminate("restart-user", &info.id)
+            .await
+            .expect("terminate");
+    }
+
+    #[tokio::test]
+    async fn list_returns_empty_when_no_tmux_server() {
+        let manager = SessionManager::new_with_store(temp_store());
+        let list = manager.list("no-server-user").await.expect("list sessions");
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_only_returns_sessions_for_requested_user() {
+        let store = temp_store();
+        let manager = SessionManager::new_with_store(store);
+        let registry = ProfileRegistry::new("alice");
+        let profile = registry.get("bash").unwrap();
+
+        let alice_info = manager
+            .create("alice", "private", &profile, &registry)
+            .await
+            .expect("create alice session");
+
+        let alices_list = manager.list("alice").await.expect("list alice sessions");
+        assert_eq!(alices_list.len(), 1);
+        assert_eq!(alices_list[0].id, alice_info.id);
+
+        let bobs_list = manager.list("bob").await.expect("list bob sessions");
+        assert!(bobs_list.is_empty());
+
+        manager.terminate("alice", &alice_info.id).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn attach_to_session_receives_output() {
-        let manager = SessionManager::new();
+        let manager = SessionManager::new_with_store(temp_store());
         let registry = ProfileRegistry::new("test-user");
         let profile = registry.get("bash").unwrap();
 
