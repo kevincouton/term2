@@ -6,6 +6,8 @@
 # !Cargo.lock
 
 node_modules
+/test-results
+/e2e/test-results
 
 # Android
 /android/.gradle
