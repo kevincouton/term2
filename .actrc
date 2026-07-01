@@ -1,0 +1,2 @@
+--container-daemon-socket /run/podman/podman.sock
+--rm

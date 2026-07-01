@@ -102,6 +102,25 @@ The E2E suite:
 - creates a nushell session and runs a command,
 - splits a tmux pane inside a live session.
 
+### CI locally with `act`
+
+GitHub Actions are **disabled in this repository**; workflows run locally with [`act`](https://github.com/nektos/act) and Podman.
+
+A `.actrc` is provided so `act` uses the local Podman socket:
+
+```bash
+# Run a single job
+act -j fmt
+act -j clippy
+act -j test
+act -j e2e
+
+# Run the whole pipeline (excluding deploy)
+act --rm -j fmt -j clippy -j test -j e2e -j audit -j deny -j sast
+```
+
+Requirements: `act`, Podman, and a running Podman socket at `/run/podman/podman.sock`.
+
 ---
 
 ## 📦 Deployment
