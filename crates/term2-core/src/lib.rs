@@ -1,6 +1,7 @@
-//! Core terminal multiplexer and PTY abstractions for Term2.
+//! Core terminal multiplexer, profile, and PTY abstractions for Term2.
 
-pub mod pty;
+pub mod profile;
 pub mod session;
 
-pub use session::{Error, Result, SessionManager};
+pub use profile::{Profile, ProfileRegistry, Shell};
+pub use session::{Error, Result, Session, SessionInfo, SessionManager};
