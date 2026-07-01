@@ -78,6 +78,7 @@ impl ProfileRegistry {
             self.bash_profile(),
             self.zsh_profile(),
             self.nushell_profile(),
+            self.ghr_profile(),
         ];
 
         if let Ok(entries) = std::fs::read_dir(&self.base_dir) {
@@ -104,6 +105,7 @@ impl ProfileRegistry {
             "bash" => Some(self.bash_profile()),
             "zsh" => Some(self.zsh_profile()),
             "nushell" => Some(self.nushell_profile()),
+            "ghr" => Some(self.ghr_profile()),
             _ => self.load_custom(name),
         }
     }
@@ -128,16 +130,23 @@ impl ProfileRegistry {
         match profile.shell {
             Shell::Bash => {
                 let rcfile = dir.join(".bashrc");
-                let mut args = vec!["bash".to_string(), "-l".to_string()];
                 if rcfile.exists() {
-                    args.push("--rcfile".to_string());
-                    args.push(rcfile.to_string_lossy().to_string());
-                }
-                LaunchArgs {
-                    command: args[0].clone(),
-                    args,
-                    env: HashMap::new(),
-                    cwd: dir,
+                    // Sourcing the rcfile lets it `exec` into another program (e.g. ghr);
+                    // `--rcfile` is ignored for non-interactive shells, so we use -lc.
+                    let cmd = format!("source {}; exec bash -l", rcfile.to_string_lossy());
+                    LaunchArgs {
+                        command: "bash".to_string(),
+                        args: vec!["bash".to_string(), "-lc".to_string(), cmd],
+                        env: HashMap::new(),
+                        cwd: dir,
+                    }
+                } else {
+                    LaunchArgs {
+                        command: "bash".to_string(),
+                        args: vec!["bash".to_string(), "-l".to_string()],
+                        env: HashMap::new(),
+                        cwd: dir,
+                    }
                 }
             }
             Shell::Zsh => {
@@ -186,6 +195,10 @@ impl ProfileRegistry {
         Profile::new("nushell", Shell::Nushell)
             .with_file("config.nu", config)
             .with_file("env.nu", env_config)
+    }
+
+    fn ghr_profile(&self) -> Profile {
+        Profile::new("ghr", Shell::Bash).with_file(".bashrc", default_ghr_bashrc())
     }
 
     fn load_custom(&self, name: &str) -> Option<Profile> {
@@ -275,4 +288,18 @@ $env.PROMPT_COMMAND = {|| "~> " }
 "#
     .to_string();
     (config, env_config)
+}
+
+fn default_ghr_bashrc() -> String {
+    r#"# Term2 GitHub Review (ghr) launcher
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+if command -v ghr >/dev/null 2>&1; then
+  exec ghr
+else
+  echo "ghr is not installed" >&2
+  echo "Install: curl -fsSL https://raw.githubusercontent.com/chenyukang/ghr/main/install.sh | sh" >&2
+  exec bash -l
+fi
+"#
+    .to_string()
 }

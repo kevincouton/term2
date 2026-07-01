@@ -35,12 +35,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install tmux, zsh and nushell
+      - name: Install tmux, zsh, nushell and ghr
         run: |
           sudo apt-get update
           sudo apt-get install -y tmux zsh
           curl -L https://github.com/nushell/nushell/releases/download/0.113.1/nu-0.113.1-x86_64-unknown-linux-gnu.tar.gz | tar xz
           sudo mv nu-0.113.1-x86_64-unknown-linux-gnu/nu /usr/local/bin/nu
+          curl -fsSL https://raw.githubusercontent.com/chenyukang/ghr/main/install.sh | GHR_INSTALL_DIR=/usr/local/bin sh
       - name: Install Oh My Zsh
         run: |
           sudo mkdir -p /usr/share/oh-my-zsh
@@ -53,12 +54,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install tmux, zsh and nushell
+      - name: Install tmux, zsh, nushell and ghr
         run: |
           sudo apt-get update
           sudo apt-get install -y tmux zsh
           curl -L https://github.com/nushell/nushell/releases/download/0.113.1/nu-0.113.1-x86_64-unknown-linux-gnu.tar.gz | tar xz
           sudo mv nu-0.113.1-x86_64-unknown-linux-gnu/nu /usr/local/bin/nu
+          curl -fsSL https://raw.githubusercontent.com/chenyukang/ghr/main/install.sh | GHR_INSTALL_DIR=/usr/local/bin sh
       - name: Install Oh My Zsh
         run: |
           sudo mkdir -p /usr/share/oh-my-zsh

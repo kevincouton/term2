@@ -25,8 +25,22 @@
 
       <section class="card">
         <h2>Profiles</h2>
-        <p class="hint">Built-in: bash, zsh (oh-my-zsh), nushell. Custom profiles live under <code>~/.config/term2/profiles/&lt;user&gt;/&lt;name&gt;/</code>.</p>
+        <p class="hint">Built-in: bash, zsh (oh-my-zsh), nushell, ghr. Custom profiles live under <code>~/.config/term2/profiles/&lt;user&gt;/&lt;name&gt;/</code>.</p>
         <div id="profiles-list" class="chips"></div>
+      </section>
+
+      <section class="card">
+        <h2>Tools</h2>
+        <div class="tool-tiles">
+          <div class="tool-tile" id="ghr-tile">
+            <div class="tool-icon">🔀</div>
+            <div class="tool-body">
+              <h3>GitHub PR Review</h3>
+              <p>Launch <a href="https://github.com/chenyukang/ghr" target="_blank" rel="noopener">ghr</a> to triage, review, comment and merge pull requests from the terminal.</p>
+              <button type="button" class="primary" id="launch-ghr-btn">Open ghr</button>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section class="card">
@@ -156,6 +170,25 @@
     });
 
     document.getElementById('refresh-btn').addEventListener('click', loadSessions);
+
+    document.getElementById('launch-ghr-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('launch-ghr-btn');
+      btn.disabled = true;
+      btn.textContent = 'Launching…';
+      try {
+        const data = await api('/api/v1/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'ghr', profile: 'ghr' }),
+        });
+        window.location.href = `/terminal.html?id=${encodeURIComponent(data.session.id)}`;
+      } catch (err) {
+        console.error(err);
+        alert('Failed to launch ghr: ' + err.message);
+        btn.disabled = false;
+        btn.textContent = 'Open ghr';
+      }
+    });
 
     async function init() {
       await loadMe();

@@ -1,7 +1,7 @@
 > # Term2
 >
 > A **Rust-first, web-based terminal multiplexer** inspired by Warp's modern UX.
-> Create persistent shell sessions from your browser, share them across devices, and run bash, zsh or nushell — all backed by tmux.
+> Create persistent shell sessions from your browser, share them across devices, and run bash, zsh, nushell or the [ghr](https://github.com/chenyukang/ghr) GitHub PR review TUI — all backed by tmux.
 >
 > **Live at [`term2.lucanian.app`](https://term2.lucanian.app)**
 
@@ -12,7 +12,8 @@
 Term2 turns a web browser into a first-class terminal client:
 
 - **Session portal** — create, list, open and kill named tmux sessions after login.
-- **Multiple shell profiles** — bash, zsh (with oh-my-zsh) and nushell out of the box.
+- **Multiple shell profiles** — bash, zsh (with oh-my-zsh), nushell and the [ghr](https://github.com/chenyukang/ghr) GitHub PR review TUI out of the box.
+- **GitHub PR Review tile** — one-click launch of `ghr` to triage, review, comment and merge pull requests.
 - **Custom dotfiles** — drop files into `~/.config/term2/profiles/<user>/<profile>/` and they become selectable profiles.
 - **Persistent sessions** — everything runs inside tmux, so sessions survive page refreshes, network hiccups and reconnects.
 - **WebSocket terminal** — xterm.js delivers a fast, native-feeling terminal in the browser.
@@ -34,6 +35,7 @@ Term2 turns a web browser into a first-class terminal client:
                                                   ┌────────────────────┐
                                                   │  tmux sessions     │
                                                   │  bash / zsh / nu   │
+                                                  │  ghr (PR review)   │
                                                   └────────────────────┘
 ```
 
@@ -52,6 +54,7 @@ Term2 turns a web browser into a first-class terminal client:
 - Rust stable toolchain
 - `tmux`, `zsh`, `nushell`
 - (Optional) `oh-my-zsh` installed at `/usr/share/oh-my-zsh` for the zsh profile
+- (Optional) `ghr` and an authenticated `gh` CLI for the GitHub PR review tile
 
 ```bash
 # Build the whole workspace
@@ -165,6 +168,7 @@ Profiles live under `~/.config/term2/profiles/<user>/<profile>/`.
 | `bash` | bash | Login shell, uses `.bashrc` if present |
 | `zsh` | zsh | Sources oh-my-zsh from `/usr/share/oh-my-zsh` |
 | `nushell` | nu | Loads `config.nu` and `env.nu` |
+| `ghr` | bash | Launches the [ghr](https://github.com/chenyukang/ghr) GitHub PR review TUI |
 | custom | any | Created by placing dotfiles in a profile directory |
 
 To create a custom profile, create a directory and add files; the directory name becomes the profile name.

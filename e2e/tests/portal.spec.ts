@@ -48,6 +48,26 @@ test.describe('portal', () => {
     await expect(page.locator('#profiles-list')).toContainText('bash');
     await expect(page.locator('#profiles-list')).toContainText('zsh');
     await expect(page.locator('#profiles-list')).toContainText('nushell');
+    await expect(page.locator('#profiles-list')).toContainText('ghr');
+    await expect(page.locator('#ghr-tile')).toContainText('GitHub PR Review');
+  });
+
+  test('ghr tile creates a GitHub review session', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#launch-ghr-btn')).toBeVisible();
+    await page.locator('#launch-ghr-btn').click();
+
+    await page.waitForURL(/\/terminal\.html\?id=/, { timeout: 5000 });
+    const params = new URL(page.url()).searchParams;
+    const id = params.get('id');
+    expect(id).toMatch(/^term2-dev-ghr/);
+
+    const api = await Term2Api.create(BASE_URL);
+    const sessions = await api.listSessions();
+    const match = sessions.find((s) => s.id === id);
+    expect(match).toBeDefined();
+    expect(match?.profile).toBe('ghr');
+    await api.dispose();
   });
 
   test('bash session can be created and receives output', async ({ page }) => {
