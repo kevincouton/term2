@@ -1,0 +1,21 @@
+use std::sync::Arc;
+
+use axum::Router;
+use tower_http::services::ServeDir;
+
+use crate::{routes, state::AppState};
+
+pub fn create(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/healthz", axum::routing::get(routes::health::health))
+        .route(
+            "/api/v1/sessions",
+            axum::routing::post(routes::sessions::create).get(routes::sessions::list),
+        )
+        .route(
+            "/api/v1/sessions/{id}/ws",
+            axum::routing::get(routes::sessions::ws),
+        )
+        .fallback_service(ServeDir::new("web"))
+        .with_state(state)
+}

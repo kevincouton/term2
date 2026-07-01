@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+.DS_Store
+
+# Cargo.lock is committed for the binary application workspace.
+# !Cargo.lock
+
+node_modules
+
+# Android
+/android/.gradle
+/android/build
+/android/app/build
+/android/local.properties
+/android/*.iml
+/android/.idea
