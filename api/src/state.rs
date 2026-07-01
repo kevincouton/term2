@@ -1,4 +1,4 @@
-use term2_core::SessionManager;
+use term2_core::{ProfileRegistry, SessionManager};
 
 pub struct AppState {
     pub sessions: SessionManager,
@@ -9,6 +9,10 @@ impl AppState {
         Self {
             sessions: SessionManager::new(),
         }
+    }
+
+    pub fn registry_for(&self, user: &str) -> ProfileRegistry {
+        ProfileRegistry::new(user)
     }
 }
 

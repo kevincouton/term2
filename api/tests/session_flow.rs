@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::test]
-async fn create_session_and_exchange_io_over_websocket() {
+async fn create_bash_session_and_exchange_io_over_websocket() {
     let state = Arc::new(term2_api::state::AppState::new());
     let app = term2_api::app::create(state);
 
@@ -18,24 +18,28 @@ async fn create_session_and_exchange_io_over_websocket() {
     });
 
     let client = reqwest::Client::new();
+    let suffix = uuid::Uuid::new_v4().to_string();
     let response = client
         .post(format!("http://{addr}/api/v1/sessions"))
-        .json(&serde_json::json!({ "command": "/bin/cat" }))
+        .json(&serde_json::json!({
+            "name": format!("bash-flow-{suffix}"),
+            "profile": "bash",
+        }))
         .send()
         .await
         .unwrap();
 
     assert!(response.status().is_success());
     let payload: serde_json::Value = response.json().await.unwrap();
-    let id = payload["id"].as_str().unwrap();
+    let id = payload["session"]["id"].as_str().unwrap();
 
     let ws_url = format!("ws://{addr}/api/v1/sessions/{id}/ws");
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await.unwrap();
 
-    // Wait for the shell to settle before sending input.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Give bash a moment to settle before sending input.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    ws.send(Message::Text("term2-e2e-ok\n".into()))
+    ws.send(Message::Text("echo term2-e2e-ok\n".into()))
         .await
         .unwrap();
 
@@ -55,4 +59,11 @@ async fn create_session_and_exchange_io_over_websocket() {
             }
         }
     }
+
+    // Clean up the tmux session.
+    client
+        .delete(format!("http://{addr}/api/v1/sessions/{id}"))
+        .send()
+        .await
+        .unwrap();
 }
