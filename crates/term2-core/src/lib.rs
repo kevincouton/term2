@@ -18,6 +18,7 @@ pub mod scrollback;
 pub mod session;
 pub mod theme;
 pub mod warp_drive;
+pub mod window;
 
 pub use agent_mode::{AgentConversation, AgentStatus, InputMode};
 pub use block::{Block, BlockId, BlockStatus, BlockStore};
@@ -39,3 +40,4 @@ pub use warp_drive::{
     ArgumentType, DynamicSource, EnvVar, EnvVarSet, Notebook, NotebookCell, Prompt, WarpDrive,
     Workflow, WorkflowArgument,
 };
+pub use window::Window;

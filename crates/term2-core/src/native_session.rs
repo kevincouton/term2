@@ -278,6 +278,17 @@ impl NativeSession {
         result
     }
 
+    /// Synchronous fire-and-forget kill for use during pane cleanup.
+    pub fn kill_now(&self) {
+        self.close_input();
+        if let Ok(pty) = self.pty.try_lock() {
+            if let Err(e) = pty.kill() {
+                error!("native session kill_now failed: {e}");
+            }
+        }
+        self.shutdown();
+    }
+
     /// Return the OS process id, if known.
     pub fn process_id(&self) -> Option<u32> {
         self.pty.try_lock().ok().and_then(|pty| pty.process_id())
