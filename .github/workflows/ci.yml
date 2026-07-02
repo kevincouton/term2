@@ -94,6 +94,33 @@ jobs:
       - name: Run E2E tests
         run: cd e2e && ./run.sh
 
+  e2e-tmux-legacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install tmux, zsh, nushell and ghr
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux zsh
+          curl -L https://github.com/nushell/nushell/releases/download/0.113.1/nu-0.113.1-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo mv nu-0.113.1-x86_64-unknown-linux-gnu/nu /usr/local/bin/nu
+          curl -fsSL https://raw.githubusercontent.com/chenyukang/ghr/main/install.sh | GHR_INSTALL_DIR=/usr/local/bin sh
+      - name: Install Oh My Zsh
+        run: |
+          sudo mkdir -p /usr/share/oh-my-zsh
+          sudo git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /usr/share/oh-my-zsh
+      - name: Install Playwright
+        run: |
+          cd e2e
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Build server
+        run: cargo build -p term2-api --bin term2-server
+      - name: Run E2E tests with tmux backend
+        run: cd e2e && TERM2_BACKEND=tmux ./run.sh
+
   audit:
     runs-on: ubuntu-latest
     steps:
@@ -123,7 +150,7 @@ jobs:
             p/owasp-top-ten
 
   deploy:
-    needs: [fmt, clippy, test, e2e, audit, deny, sast]
+    needs: [fmt, clippy, test, test-tmux-legacy, e2e, e2e-tmux-legacy, audit, deny, sast]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:

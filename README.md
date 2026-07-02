@@ -104,8 +104,12 @@ The E2E suite:
 - loads the portal and verifies built-in profiles,
 - creates a bash session and runs a command,
 - creates a zsh session with oh-my-zsh and runs a command,
-- creates a nushell session and runs a command,
 - kills a session from the portal.
+
+On the default `native` backend, nushell and tmux-pane tests are skipped because
+nushell needs a controlling TTY and tmux panes are a legacy backend feature. Run
+`TERM2_BACKEND=tmux ./run.sh` to exercise the nushell session and legacy tmux
+tiling tests as well.
 
 ### CI locally with `act`
 

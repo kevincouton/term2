@@ -3,6 +3,10 @@ import { Term2Api } from '../support/fixtures';
 
 const BASE_URL = process.env.TERM2_BASE_URL || 'http://127.0.0.1:3000';
 
+function backendIsTmux(): boolean {
+  return (process.env.TERM2_BACKEND || 'native').toLowerCase() === 'tmux';
+}
+
 async function waitForTerminalText(page: Page, needle: string, timeout = 15000): Promise<void> {
   await page.waitForFunction(
     (text) => {
@@ -93,7 +97,9 @@ test.describe('portal', () => {
     await waitForTerminalText(page, 'term2-zsh-ok');
   });
 
-  test.skip('nushell session runs commands — skipped on native backend; nushell REPL needs a controlling TTY', async ({ page }) => {
+  test('nushell session runs commands', async ({ page }) => {
+    test.skip(!backendIsTmux(), 'nushell REPL needs a controlling TTY; run with TERM2_BACKEND=tmux');
+
     const id = await openSession(page, `nu-e2e-${Date.now()}`, 'nushell');
     await page.goto(`/terminal.html?id=${encodeURIComponent(id)}`);
 
@@ -105,7 +111,9 @@ test.describe('portal', () => {
     await waitForTerminalText(page, 'term2-nu-ok');
   });
 
-  test.skip('legacy tmux tiling split — skipped without tmux; native panes coming in Phase 2', async ({ page }) => {
+  test('legacy tmux tiling split', async ({ page }) => {
+    test.skip(!backendIsTmux(), 'tmux pane splitting requires the tmux backend; run with TERM2_BACKEND=tmux');
+
     const id = await openSession(page, `tmux-tile-${Date.now()}`, 'bash');
     await page.goto(`/terminal.html?id=${encodeURIComponent(id)}`);
 
