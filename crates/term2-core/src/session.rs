@@ -189,7 +189,8 @@ impl SessionManager {
         }
 
         let scrollback_dir = self.scrollback_root.join(&id);
-        let window = Window::new(&id, &id, &name, profile, registry, scrollback_dir.clone()).await?;
+        let window =
+            Window::new(&id, &id, &name, profile, registry, scrollback_dir.clone()).await?;
         let info = SessionInfo {
             id: id.clone(),
             name: name.clone(),
@@ -519,6 +520,7 @@ impl SessionManager {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("session not found")
+                || stderr.contains("can't find session")
                 || stderr.contains("no server running")
                 || stderr.contains("error connecting to")
             {
@@ -536,7 +538,8 @@ impl SessionManager {
     }
 
     pub async fn list_panes(&self, _user: &str, session_id: &str) -> Result<Vec<crate::PaneInfo>> {
-        self.pane_op(session_id, |window| Ok(window.list_panes())).await
+        self.pane_op(session_id, |window| Ok(window.list_panes()))
+            .await
     }
 
     pub async fn split_pane(
@@ -547,7 +550,9 @@ impl SessionManager {
     ) -> Result<crate::PaneInfo> {
         let registry = self.registry_for_session(session_id);
         self.pane_op(session_id, |window| {
-            let profile_name = window.active_pane().map(|p| p.native_session.info.profile.clone());
+            let profile_name = window
+                .active_pane()
+                .map(|p| p.native_session.info.profile.clone());
             let profile = profile_name
                 .and_then(|name| registry.get(&name))
                 .ok_or_else(|| Error::ProfileNotFound("active".to_string()))?;
@@ -556,12 +561,7 @@ impl SessionManager {
         .await
     }
 
-    pub async fn close_pane(
-        &self,
-        user: &str,
-        session_id: &str,
-        pane_id: &str,
-    ) -> Result<()> {
+    pub async fn close_pane(&self, user: &str, session_id: &str, pane_id: &str) -> Result<()> {
         let pane_id = pane_id.to_string();
         let terminate_session = self
             .pane_op(session_id, move |window| window.close_pane(&pane_id))
@@ -572,12 +572,7 @@ impl SessionManager {
         Ok(())
     }
 
-    pub async fn focus_pane(
-        &self,
-        _user: &str,
-        session_id: &str,
-        pane_id: &str,
-    ) -> Result<()> {
+    pub async fn focus_pane(&self, _user: &str, session_id: &str, pane_id: &str) -> Result<()> {
         let pane_id = pane_id.to_string();
         self.pane_op(session_id, move |window| window.focus_pane(&pane_id))
             .await
@@ -589,7 +584,9 @@ impl SessionManager {
         op: impl FnOnce(&mut crate::Window) -> Result<T>,
     ) -> Result<T> {
         if self.backend != Backend::Native {
-            return Err(Error::Backend("pane operations require native backend".to_string()));
+            return Err(Error::Backend(
+                "pane operations require native backend".to_string(),
+            ));
         }
         let mut windows = self.windows.write().await;
         let window = windows
@@ -1611,7 +1608,13 @@ mod tests {
             .expect("list panes after split");
         assert_eq!(panes.len(), 2);
         assert!(panes.iter().any(|p| p.id == new_pane.id));
-        assert!(panes.iter().find(|p| p.id == new_pane.id).unwrap().is_focused);
+        assert!(
+            panes
+                .iter()
+                .find(|p| p.id == new_pane.id)
+                .unwrap()
+                .is_focused
+        );
 
         manager
             .focus_pane("native-pane-user", &info.id, &initial_pane_id)
@@ -1622,8 +1625,20 @@ mod tests {
             .list_panes("native-pane-user", &info.id)
             .await
             .expect("list panes after focus");
-        assert!(panes.iter().find(|p| p.id == initial_pane_id).unwrap().is_focused);
-        assert!(!panes.iter().find(|p| p.id == new_pane.id).unwrap().is_focused);
+        assert!(
+            panes
+                .iter()
+                .find(|p| p.id == initial_pane_id)
+                .unwrap()
+                .is_focused
+        );
+        assert!(
+            !panes
+                .iter()
+                .find(|p| p.id == new_pane.id)
+                .unwrap()
+                .is_focused
+        );
 
         manager
             .close_pane("native-pane-user", &info.id, &new_pane.id)
@@ -1642,7 +1657,10 @@ mod tests {
             .await
             .expect("close last pane");
 
-        let list = manager.list("native-pane-user").await.expect("list sessions");
+        let list = manager
+            .list("native-pane-user")
+            .await
+            .expect("list sessions");
         assert!(!list.iter().any(|s| s.id == info.id));
     }
 }

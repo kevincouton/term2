@@ -100,7 +100,7 @@ impl Window {
         // the session instead of keeping an empty layout.
         if self.panes.len() == 1 {
             let pane = self.panes.remove(pane_id).expect("pane verified above");
-            let _ = pane.native_session.kill_now();
+            pane.native_session.kill_now();
             return Ok(true);
         }
 
@@ -108,7 +108,7 @@ impl Window {
             .remove_pane(pane_id)
             .map_err(|e| crate::Error::SessionNotFound(e.to_string()))?;
         let pane = self.panes.remove(pane_id).expect("pane verified above");
-        let _ = pane.native_session.kill_now();
+        pane.native_session.kill_now();
 
         if self.active_pane_id == *pane_id {
             self.active_pane_id = self
@@ -132,11 +132,13 @@ impl Window {
         self.layout
             .list_panes()
             .into_iter()
-            .filter_map(|id| self.panes.get(id).map(|p| {
-                let mut info = p.info();
-                info.is_focused = id == &self.active_pane_id;
-                info
-            }))
+            .filter_map(|id| {
+                self.panes.get(id).map(|p| {
+                    let mut info = p.info();
+                    info.is_focused = id == &self.active_pane_id;
+                    info
+                })
+            })
             .collect()
     }
 

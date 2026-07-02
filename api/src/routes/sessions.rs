@@ -99,7 +99,11 @@ async fn handle_pane_socket(
     pane_id: String,
 ) {
     // First focus the requested pane, then attach to it.
-    if let Err(e) = state.sessions.focus_pane(&user.id, &session_id, &pane_id).await {
+    if let Err(e) = state
+        .sessions
+        .focus_pane(&user.id, &session_id, &pane_id)
+        .await
+    {
         tracing::warn!("ws_pane focus failed for {session_id}/{pane_id}: {e}");
         return;
     }

@@ -116,9 +116,7 @@ impl LayoutNode {
     pub fn contains_pane(&self, pane_id: &PaneId) -> bool {
         match self {
             LayoutNode::Pane(id) => id == pane_id,
-            LayoutNode::Split { children, .. } => {
-                children.iter().any(|c| c.contains_pane(pane_id))
-            }
+            LayoutNode::Split { children, .. } => children.iter().any(|c| c.contains_pane(pane_id)),
         }
     }
 
@@ -148,10 +146,12 @@ impl LayoutNode {
 
     pub fn next_pane(&self, pane_id: &PaneId) -> Option<&PaneId> {
         let panes = self.list_panes();
-        panes
-            .iter()
-            .position(|&id| id == pane_id)
-            .and_then(|idx| panes.get(idx + 1).copied().or_else(|| panes.first().copied()))
+        panes.iter().position(|&id| id == pane_id).and_then(|idx| {
+            panes
+                .get(idx + 1)
+                .copied()
+                .or_else(|| panes.first().copied())
+        })
     }
 }
 
@@ -170,7 +170,10 @@ mod tests {
             .split_pane(&pid("p1"), SplitDirection::Vertical, pid("p2"))
             .unwrap();
         match layout {
-            LayoutNode::Split { direction, children } => {
+            LayoutNode::Split {
+                direction,
+                children,
+            } => {
                 assert_eq!(direction, SplitDirection::Vertical);
                 assert_eq!(children.len(), 2);
                 assert!(matches!(&children[0], LayoutNode::Pane(id) if id == "p1"));
