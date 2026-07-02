@@ -7,6 +7,7 @@ pub mod completions;
 pub mod input_editor;
 pub mod keybinding;
 pub mod launch_config;
+pub mod layout;
 pub mod native_session;
 pub mod notification;
 pub mod paths;
@@ -24,6 +25,7 @@ pub use completions::{CompletionEngine, CompletionItem, CompletionKind, HistoryS
 pub use input_editor::InputEditor;
 pub use keybinding::{KeybindingSet, Shortcut};
 pub use launch_config::LaunchConfig;
+pub use layout::{LayoutNode, SplitDirection};
 pub use native_session::NativeSession;
 pub use notification::{Notification, NotificationMailbox, NotificationType, TabStatus};
 pub use profile::{Profile, ProfileRegistry, Shell};
