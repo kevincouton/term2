@@ -8,7 +8,7 @@ use tracing::{debug, error};
 
 use crate::native_session::NativeSession;
 use crate::profile::{Profile, ProfileRegistry};
-use crate::scrollback::ReplaySender;
+use crate::scrollback::{BroadcastMessage, ReplaySender};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -552,7 +552,7 @@ impl SessionManager {
             .map_err(|e| Error::Tmux(e.to_string()))?;
 
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        let (output_tx, _output_rx) = broadcast::channel::<Vec<u8>>(1024);
+        let (output_tx, _output_rx) = broadcast::channel::<BroadcastMessage>(1024);
         let output_tx_reader = output_tx.clone();
 
         // Keep the PtyMaster alive for the lifetime of the child; dropping it
@@ -561,13 +561,18 @@ impl SessionManager {
 
         tokio::task::spawn_blocking(move || {
             let mut buf = [0u8; 4096];
+            let mut next_seq: u64 = 0;
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        next_seq += 1;
                         // Ignore send errors so a transient lack of receivers
                         // does not tear down the PTY reader.
-                        let _ = output_tx_reader.send(buf[..n].to_vec());
+                        let _ = output_tx_reader.send(BroadcastMessage {
+                            seq: next_seq,
+                            data: buf[..n].to_vec(),
+                        });
                     }
                     Err(e) => {
                         error!("tmux reader error: {e}");

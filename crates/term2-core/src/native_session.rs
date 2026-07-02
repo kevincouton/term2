@@ -17,7 +17,9 @@ use tracing::{debug, error};
 
 use crate::profile::{LaunchArgs, Profile, ProfileRegistry};
 use crate::pty_manager::{PtyHandle, PtyManager};
-use crate::scrollback::{ReplaySender, Scrollback, DEFAULT_MAX_SCROLLBACK_BYTES};
+use crate::scrollback::{
+    max_bytes_from_env, BroadcastMessage, ReplaySender, Scrollback,
+};
 use crate::{Result, Session, SessionInfo};
 
 /// A shell session backed directly by a native PTY.
@@ -90,11 +92,11 @@ impl NativeSession {
         });
         let scrollback = Arc::new(Mutex::new(Scrollback::new(
             &scrollback_dir,
-            DEFAULT_MAX_SCROLLBACK_BYTES,
+            max_bytes_from_env(),
         )));
 
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        let (output_tx, _output_rx) = broadcast::channel::<Vec<u8>>(1024);
+        let (output_tx, _output_rx) = broadcast::channel::<BroadcastMessage>(1024);
         let output_tx_reader = output_tx.clone();
         let scrollback_for_task = scrollback.clone();
 
@@ -134,6 +136,7 @@ impl NativeSession {
         let shutdown_for_task = shutdown.clone();
         let reader_handle = tokio::task::spawn_blocking(move || {
             let mut buf = [0u8; 4096];
+            let mut next_seq: u64 = 0;
             loop {
                 if shutdown_for_task.load(Ordering::Relaxed) {
                     break;
@@ -146,11 +149,17 @@ impl NativeSession {
                     Ok(0) => break,
                     Ok(n) => {
                         let chunk = &buf[..n];
+                        next_seq += 1;
                         // Persist the chunk before broadcasting so subscribers
                         // that observe the output can also rely on it being on
-                        // disk for later replay.
+                        // disk for later replay. A failing disk write must not
+                        // crash the session or interrupt live output.
                         if let Ok(mut s) = scrollback_for_task.lock() {
-                            let _ = s.append(chunk);
+                            if let Err(e) = s.append_with_seq(chunk, next_seq) {
+                                error!(
+                                    "native session scrollback append failed for {reader_id}: {e}"
+                                );
+                            }
                         }
                         // Release the lock before broadcasting so shutdown can
                         // take the reader while we send.
@@ -158,7 +167,10 @@ impl NativeSession {
                         // Ignore send errors: there may be no active receivers
                         // between detach and re-attach, and the broadcast sender
                         // must stay alive for future attach calls.
-                        let _ = output_tx_reader.send(chunk.to_vec());
+                        let _ = output_tx_reader.send(BroadcastMessage {
+                            seq: next_seq,
+                            data: chunk.to_vec(),
+                        });
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         // No data available yet; release the reader and sleep
