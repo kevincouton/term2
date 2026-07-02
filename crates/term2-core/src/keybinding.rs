@@ -157,6 +157,11 @@ pub fn default_keybindings() -> KeybindingSet {
         Shortcut::parse("CMD--").unwrap(),
         "workspace:decrease_font_size",
     );
+    kb.bind(Shortcut::parse("CMD-D").unwrap(), "pane:split_right");
+    kb.bind(Shortcut::parse("CMD-SHIFT-D").unwrap(), "pane:split_down");
+    kb.bind(Shortcut::parse("CMD-W").unwrap(), "pane:close");
+    kb.bind(Shortcut::parse("CMD-[").unwrap(), "pane:focus_prev");
+    kb.bind(Shortcut::parse("CMD-]").unwrap(), "pane:focus_next");
     kb
 }
 
@@ -196,7 +201,7 @@ mod tests {
         let kb = default_keybindings();
         assert_eq!(
             kb.action_for(&Shortcut::parse("CMD-D").unwrap()),
-            Some("pane_group:add_right")
+            Some("pane:split_right")
         );
         assert_eq!(
             kb.action_for(&Shortcut::parse("CTRL-R").unwrap()),
@@ -253,7 +258,24 @@ mod tests {
         let kb = default_keybindings();
         assert_eq!(
             kb.action_for(&Shortcut::parse("CMD-D").unwrap()),
-            Some("pane_group:add_right")
+            Some("pane:split_right")
+        );
+    }
+
+    #[test]
+    fn pane_split_actions_are_bound() {
+        let kb = default_keybindings();
+        assert_eq!(
+            kb.action_for(&Shortcut::parse("CMD-D").unwrap()),
+            Some("pane:split_right")
+        );
+        assert_eq!(
+            kb.action_for(&Shortcut::parse("CMD-SHIFT-D").unwrap()),
+            Some("pane:split_down")
+        );
+        assert_eq!(
+            kb.action_for(&Shortcut::parse("CMD-W").unwrap()),
+            Some("pane:close")
         );
     }
 
