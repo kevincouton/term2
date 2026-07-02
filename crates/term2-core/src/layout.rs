@@ -25,6 +25,8 @@ pub enum LayoutNode {
 pub enum LayoutError {
     #[error("pane not found: {0}")]
     PaneNotFound(PaneId),
+    #[error("cannot remove the root pane: {0}")]
+    CannotRemoveRootPane(PaneId),
 }
 
 impl LayoutNode {
@@ -32,71 +34,74 @@ impl LayoutNode {
         Self::Pane(pane_id.into())
     }
 
-    pub fn split(
-        direction: SplitDirection,
-        children: impl IntoIterator<Item = LayoutNode>,
-    ) -> Self {
+    /// Create a binary split containing exactly two children.
+    pub fn split(direction: SplitDirection, left: Self, right: Self) -> Self {
         Self::Split {
             direction,
-            children: children.into_iter().collect(),
+            children: vec![left, right],
         }
     }
 
     /// Replace `target` pane with a split containing the original pane and `new_pane_id`.
     pub fn split_pane(
         &mut self,
-        target: &str,
+        target: &PaneId,
         direction: SplitDirection,
         new_pane_id: PaneId,
     ) -> Result<(), LayoutError> {
         match self {
             LayoutNode::Pane(id) if id == target => {
                 let old_id = std::mem::take(id);
-                *self = LayoutNode::Split {
+                *self = LayoutNode::split(
                     direction,
-                    children: vec![LayoutNode::Pane(old_id), LayoutNode::Pane(new_pane_id)],
-                };
+                    LayoutNode::Pane(old_id),
+                    LayoutNode::Pane(new_pane_id),
+                );
                 Ok(())
             }
-            LayoutNode::Pane(_) => Err(LayoutError::PaneNotFound(target.to_string())),
+            LayoutNode::Pane(_) => Err(LayoutError::PaneNotFound(target.clone())),
             LayoutNode::Split { children, .. } => {
                 for child in children {
                     if child.contains_pane(target) {
                         return child.split_pane(target, direction, new_pane_id);
                     }
                 }
-                Err(LayoutError::PaneNotFound(target.to_string()))
+                Err(LayoutError::PaneNotFound(target.clone()))
             }
         }
     }
 
-    /// Remove `target` pane and collapse any split that becomes empty or single-child.
-    pub fn remove_pane(&mut self, target: &str) -> Result<(), LayoutError> {
+    /// Remove `target` pane and collapse any split that becomes single-child.
+    ///
+    /// Removing the root pane is not allowed; callers must terminate the window
+    /// instead.
+    pub fn remove_pane(&mut self, target: &PaneId) -> Result<(), LayoutError> {
         match self {
             LayoutNode::Pane(id) if id == target => {
-                // Caller must ensure the window is terminated if the root pane is removed.
-                *self = LayoutNode::Pane(String::new());
-                Ok(())
+                Err(LayoutError::CannotRemoveRootPane(target.clone()))
             }
-            LayoutNode::Pane(_) => Err(LayoutError::PaneNotFound(target.to_string())),
+            LayoutNode::Pane(_) => Err(LayoutError::PaneNotFound(target.clone())),
             LayoutNode::Split { children, .. } => {
                 let mut found = false;
                 for i in 0..children.len() {
                     if children[i].contains_pane(target) {
-                        children[i].remove_pane(target)?;
                         found = true;
-                        if matches!(children[i], LayoutNode::Pane(ref id) if id.is_empty()) {
-                            children.remove(i);
-                        } else if let LayoutNode::Split { children: ref inner, .. } = children[i] {
-                            if inner.is_empty() {
+                        match &mut children[i] {
+                            LayoutNode::Pane(id) if id == target => {
                                 children.remove(i);
+                            }
+                            LayoutNode::Pane(_) => {
+                                return Err(LayoutError::PaneNotFound(target.clone()));
+                            }
+                            LayoutNode::Split { .. } => {
+                                children[i].remove_pane(target)?;
                             }
                         }
                         break;
                     }
                 }
                 if !found {
-                    return Err(LayoutError::PaneNotFound(target.to_string()));
+                    return Err(LayoutError::PaneNotFound(target.clone()));
                 }
                 // Collapse a split with a single child to that child.
                 if children.len() == 1 {
@@ -108,10 +113,12 @@ impl LayoutNode {
         }
     }
 
-    pub fn contains_pane(&self, pane_id: &str) -> bool {
+    pub fn contains_pane(&self, pane_id: &PaneId) -> bool {
         match self {
             LayoutNode::Pane(id) => id == pane_id,
-            LayoutNode::Split { children, .. } => children.iter().any(|c| c.contains_pane(pane_id)),
+            LayoutNode::Split { children, .. } => {
+                children.iter().any(|c| c.contains_pane(pane_id))
+            }
         }
     }
 
@@ -139,7 +146,7 @@ impl LayoutNode {
         }
     }
 
-    pub fn next_pane(&self, pane_id: &str) -> Option<&PaneId> {
+    pub fn next_pane(&self, pane_id: &PaneId) -> Option<&PaneId> {
         let panes = self.list_panes();
         panes
             .iter()
@@ -152,10 +159,16 @@ impl LayoutNode {
 mod tests {
     use super::*;
 
+    fn pid(id: &str) -> PaneId {
+        id.to_string()
+    }
+
     #[test]
     fn split_leaf_creates_two_panes() {
-        let mut layout = LayoutNode::Pane("p1".to_string());
-        layout.split_pane("p1", SplitDirection::Vertical, "p2".to_string()).unwrap();
+        let mut layout = LayoutNode::Pane(pid("p1"));
+        layout
+            .split_pane(&pid("p1"), SplitDirection::Vertical, pid("p2"))
+            .unwrap();
         match layout {
             LayoutNode::Split { direction, children } => {
                 assert_eq!(direction, SplitDirection::Vertical);
@@ -168,15 +181,34 @@ mod tests {
     }
 
     #[test]
-    fn nested_split_preserves_direction() {
-        let mut layout = LayoutNode::Pane("p1".to_string());
-        layout.split_pane("p1", SplitDirection::Vertical, "p2".to_string()).unwrap();
-        layout.split_pane("p2", SplitDirection::Horizontal, "p3".to_string()).unwrap();
+    fn split_constructor_enforces_binary_split() {
+        let split = LayoutNode::split(
+            SplitDirection::Horizontal,
+            LayoutNode::Pane(pid("a")),
+            LayoutNode::Pane(pid("b")),
+        );
+        match split {
+            LayoutNode::Split { children, .. } => {
+                assert_eq!(children.len(), 2);
+            }
+            _ => panic!("expected split"),
+        }
+    }
 
-        assert!(layout.contains_pane("p1"));
-        assert!(layout.contains_pane("p2"));
-        assert!(layout.contains_pane("p3"));
-        assert!(!layout.contains_pane("p4"));
+    #[test]
+    fn nested_split_preserves_direction() {
+        let mut layout = LayoutNode::Pane(pid("p1"));
+        layout
+            .split_pane(&pid("p1"), SplitDirection::Vertical, pid("p2"))
+            .unwrap();
+        layout
+            .split_pane(&pid("p2"), SplitDirection::Horizontal, pid("p3"))
+            .unwrap();
+
+        assert!(layout.contains_pane(&pid("p1")));
+        assert!(layout.contains_pane(&pid("p2")));
+        assert!(layout.contains_pane(&pid("p3")));
+        assert!(!layout.contains_pane(&pid("p4")));
 
         let panes = layout.list_panes();
         assert_eq!(panes, vec!["p1", "p2", "p3"]);
@@ -202,65 +234,88 @@ mod tests {
 
     #[test]
     fn remove_pane_collapses_split() {
-        let mut layout = LayoutNode::Pane("p1".to_string());
-        layout.split_pane("p1", SplitDirection::Vertical, "p2".to_string()).unwrap();
-        layout.remove_pane("p2").unwrap();
+        let mut layout = LayoutNode::Pane(pid("p1"));
+        layout
+            .split_pane(&pid("p1"), SplitDirection::Vertical, pid("p2"))
+            .unwrap();
+        layout.remove_pane(&pid("p2")).unwrap();
 
-        assert_eq!(layout, LayoutNode::Pane("p1".to_string()));
-        assert!(layout.contains_pane("p1"));
-        assert!(!layout.contains_pane("p2"));
+        assert_eq!(layout, LayoutNode::Pane(pid("p1")));
+        assert!(layout.contains_pane(&pid("p1")));
+        assert!(!layout.contains_pane(&pid("p2")));
     }
 
     #[test]
     fn remove_pane_cascades_in_nested_split() {
-        let mut layout = LayoutNode::Pane("p1".to_string());
-        layout.split_pane("p1", SplitDirection::Vertical, "p2".to_string()).unwrap();
-        layout.split_pane("p2", SplitDirection::Horizontal, "p3".to_string()).unwrap();
-        layout.remove_pane("p3").unwrap();
+        let mut layout = LayoutNode::Pane(pid("p1"));
+        layout
+            .split_pane(&pid("p1"), SplitDirection::Vertical, pid("p2"))
+            .unwrap();
+        layout
+            .split_pane(&pid("p2"), SplitDirection::Horizontal, pid("p3"))
+            .unwrap();
+        layout.remove_pane(&pid("p3")).unwrap();
 
         // The horizontal split collapses to just p2, leaving a vertical split of p1 and p2.
         assert!(matches!(layout, LayoutNode::Split { .. }));
-        assert!(layout.contains_pane("p1"));
-        assert!(layout.contains_pane("p2"));
-        assert!(!layout.contains_pane("p3"));
+        assert!(layout.contains_pane(&pid("p1")));
+        assert!(layout.contains_pane(&pid("p2")));
+        assert!(!layout.contains_pane(&pid("p3")));
     }
 
     #[test]
     fn remove_pane_not_found() {
-        let mut layout = LayoutNode::Pane("p1".to_string());
-        let err = layout.remove_pane("p2").unwrap_err();
+        let mut layout = LayoutNode::Pane(pid("p1"));
+        let err = layout.remove_pane(&pid("p2")).unwrap_err();
         assert!(matches!(err, LayoutError::PaneNotFound(id) if id == "p2"));
     }
 
     #[test]
-    fn first_pane_returns_leftmost() {
-        let mut layout = LayoutNode::Pane("p1".to_string());
-        layout.split_pane("p1", SplitDirection::Vertical, "p2".to_string()).unwrap();
-        layout.split_pane("p2", SplitDirection::Horizontal, "p3".to_string()).unwrap();
+    fn remove_root_pane_fails() {
+        let mut layout = LayoutNode::Pane(pid("p1"));
+        let err = layout.remove_pane(&pid("p1")).unwrap_err();
+        assert!(matches!(err, LayoutError::CannotRemoveRootPane(id) if id == "p1"));
+        // The layout must remain unchanged.
+        assert_eq!(layout, LayoutNode::Pane(pid("p1")));
+    }
 
-        assert_eq!(layout.first_pane(), Some(&"p1".to_string()));
+    #[test]
+    fn first_pane_returns_leftmost() {
+        let mut layout = LayoutNode::Pane(pid("p1"));
+        layout
+            .split_pane(&pid("p1"), SplitDirection::Vertical, pid("p2"))
+            .unwrap();
+        layout
+            .split_pane(&pid("p2"), SplitDirection::Horizontal, pid("p3"))
+            .unwrap();
+
+        assert_eq!(layout.first_pane(), Some(&pid("p1")));
     }
 
     #[test]
     fn first_pane_on_single_pane() {
-        let layout = LayoutNode::Pane("p1".to_string());
-        assert_eq!(layout.first_pane(), Some(&"p1".to_string()));
+        let layout = LayoutNode::Pane(pid("p1"));
+        assert_eq!(layout.first_pane(), Some(&pid("p1")));
     }
 
     #[test]
     fn next_pane_advances_and_wraps() {
-        let mut layout = LayoutNode::Pane("p1".to_string());
-        layout.split_pane("p1", SplitDirection::Vertical, "p2".to_string()).unwrap();
-        layout.split_pane("p2", SplitDirection::Horizontal, "p3".to_string()).unwrap();
+        let mut layout = LayoutNode::Pane(pid("p1"));
+        layout
+            .split_pane(&pid("p1"), SplitDirection::Vertical, pid("p2"))
+            .unwrap();
+        layout
+            .split_pane(&pid("p2"), SplitDirection::Horizontal, pid("p3"))
+            .unwrap();
 
-        assert_eq!(layout.next_pane("p1"), Some(&"p2".to_string()));
-        assert_eq!(layout.next_pane("p2"), Some(&"p3".to_string()));
-        assert_eq!(layout.next_pane("p3"), Some(&"p1".to_string()));
+        assert_eq!(layout.next_pane(&pid("p1")), Some(&pid("p2")));
+        assert_eq!(layout.next_pane(&pid("p2")), Some(&pid("p3")));
+        assert_eq!(layout.next_pane(&pid("p3")), Some(&pid("p1")));
     }
 
     #[test]
     fn next_pane_single_pane_wraps_to_self() {
-        let layout = LayoutNode::Pane("p1".to_string());
-        assert_eq!(layout.next_pane("p1"), Some(&"p1".to_string()));
+        let layout = LayoutNode::Pane(pid("p1"));
+        assert_eq!(layout.next_pane(&pid("p1")), Some(&pid("p1")));
     }
 }
