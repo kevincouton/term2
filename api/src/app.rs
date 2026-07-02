@@ -25,6 +25,18 @@ pub fn create(state: Arc<AppState>) -> Router {
             "/api/v1/sessions/{id}/ws",
             axum::routing::get(routes::sessions::ws),
         )
+        .route(
+            "/api/v1/sessions/{id}/panes",
+            axum::routing::get(routes::panes::list).post(routes::panes::split),
+        )
+        .route(
+            "/api/v1/sessions/{id}/panes/{pane_id}",
+            axum::routing::delete(routes::panes::close),
+        )
+        .route(
+            "/api/v1/sessions/{id}/panes/{pane_id}/focus",
+            axum::routing::post(routes::panes::focus),
+        )
         .fallback_service(ServeDir::new(
             std::env::var("TERM2_WEB_DIR").unwrap_or_else(|_| "web".to_string()),
         ))
