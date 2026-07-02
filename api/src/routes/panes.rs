@@ -76,7 +76,7 @@ fn map_error(e: term2_core::Error, context: &str) -> StatusCode {
     tracing::error!("{context} failed: {e}");
     match e {
         term2_core::Error::SessionNotFound(_) => StatusCode::NOT_FOUND,
-        term2_core::Error::Backend(_) => StatusCode::NOT_IMPLEMENTED,
+        term2_core::Error::BackendNotSupported(_) => StatusCode::NOT_IMPLEMENTED,
         term2_core::Error::ProfileNotFound(_) => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }

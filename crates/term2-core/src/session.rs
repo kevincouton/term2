@@ -22,6 +22,8 @@ pub enum Error {
     Tmux(String),
     #[error("backend error: {0}")]
     Backend(String),
+    #[error("backend not supported: {0}")]
+    BackendNotSupported(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("session name already exists")]
@@ -189,8 +191,7 @@ impl SessionManager {
         }
 
         let scrollback_dir = self.scrollback_root.join(&id);
-        let window =
-            Window::new(&id, &id, &name, profile, registry, scrollback_dir.clone()).await?;
+        let window = Window::new(&id, &id, &name, profile, registry, scrollback_dir.clone())?;
         let info = SessionInfo {
             id: id.clone(),
             name: name.clone(),
@@ -537,72 +538,91 @@ impl SessionManager {
         Ok(())
     }
 
-    pub async fn list_panes(&self, _user: &str, session_id: &str) -> Result<Vec<crate::PaneInfo>> {
-        self.pane_op(session_id, |window| Ok(window.list_panes()))
-            .await
+    pub async fn list_panes(&self, user: &str, session_id: &str) -> Result<Vec<crate::PaneInfo>> {
+        self.pane_op_read(
+            user,
+            session_id,
+            |window, _registry| Ok(window.list_panes()),
+        )
+        .await
     }
 
     pub async fn split_pane(
         &self,
-        _user: &str,
+        user: &str,
         session_id: &str,
         direction: crate::SplitDirection,
     ) -> Result<crate::PaneInfo> {
-        let registry = self.registry_for_session(session_id);
-        self.pane_op(session_id, |window| {
+        self.pane_op(user, session_id, |window, registry| {
             let profile_name = window
                 .active_pane()
                 .map(|p| p.native_session.info.profile.clone());
             let profile = profile_name
                 .and_then(|name| registry.get(&name))
                 .ok_or_else(|| Error::ProfileNotFound("active".to_string()))?;
-            window.split_active_pane(direction, &profile, &registry)
+            window.split_active_pane(direction, &profile, registry)
         })
         .await
     }
 
     pub async fn close_pane(&self, user: &str, session_id: &str, pane_id: &str) -> Result<()> {
         let pane_id = pane_id.to_string();
-        let terminate_session = self
-            .pane_op(session_id, move |window| window.close_pane(&pane_id))
+        let (pane, terminate_session) = self
+            .pane_op(user, session_id, move |window, _registry| {
+                window.close_pane(&pane_id)
+            })
             .await?;
+        pane.kill().await?;
         if terminate_session {
             self.terminate(user, session_id).await?;
         }
         Ok(())
     }
 
-    pub async fn focus_pane(&self, _user: &str, session_id: &str, pane_id: &str) -> Result<()> {
+    pub async fn focus_pane(&self, user: &str, session_id: &str, pane_id: &str) -> Result<()> {
         let pane_id = pane_id.to_string();
-        self.pane_op(session_id, move |window| window.focus_pane(&pane_id))
-            .await
+        self.pane_op(user, session_id, move |window, _registry| {
+            window.focus_pane(&pane_id)
+        })
+        .await
     }
 
     async fn pane_op<T>(
         &self,
+        user: &str,
         session_id: &str,
-        op: impl FnOnce(&mut crate::Window) -> Result<T>,
+        op: impl FnOnce(&mut crate::Window, &crate::ProfileRegistry) -> Result<T>,
     ) -> Result<T> {
         if self.backend != Backend::Native {
-            return Err(Error::Backend(
+            return Err(Error::BackendNotSupported(
                 "pane operations require native backend".to_string(),
             ));
         }
+        let registry = crate::ProfileRegistry::new(user);
         let mut windows = self.windows.write().await;
         let window = windows
             .get_mut(session_id)
             .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
-        op(window)
+        op(window, &registry)
     }
 
-    fn registry_for_session(&self, session_id: &str) -> crate::ProfileRegistry {
-        // Extract user from session id "term2-<user>-<name>".
-        let user = session_id
-            .strip_prefix("term2-")
-            .and_then(|rest| rest.split_once('-'))
-            .map(|(user, _)| user)
-            .unwrap_or("dev");
-        crate::ProfileRegistry::new(user)
+    async fn pane_op_read<T>(
+        &self,
+        user: &str,
+        session_id: &str,
+        op: impl FnOnce(&crate::Window, &crate::ProfileRegistry) -> Result<T>,
+    ) -> Result<T> {
+        if self.backend != Backend::Native {
+            return Err(Error::BackendNotSupported(
+                "pane operations require native backend".to_string(),
+            ));
+        }
+        let registry = crate::ProfileRegistry::new(user);
+        let windows = self.windows.read().await;
+        let window = windows
+            .get(session_id)
+            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+        op(window, &registry)
     }
 
     async fn attach_to_tmux(&self, tmux_name: &str) -> Result<Session> {
@@ -1662,5 +1682,81 @@ mod tests {
             .await
             .expect("list sessions");
         assert!(!list.iter().any(|s| s.id == info.id));
+    }
+
+    #[tokio::test]
+    async fn native_close_pane_kills_underlying_process() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("native-close-kill-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("native-close-kill-user", "pane-kill", &profile, &registry)
+            .await
+            .expect("create session");
+
+        let new_pane = manager
+            .split_pane(
+                "native-close-kill-user",
+                &info.id,
+                crate::SplitDirection::Vertical,
+            )
+            .await
+            .expect("split pane");
+
+        // Capture the OS process id before closing the pane.
+        let pid = {
+            let windows = manager.windows.read().await;
+            let window = windows.get(&info.id).expect("window exists");
+            let pane = window.pane(&new_pane.id).expect("pane exists");
+            pane.native_session
+                .process_id()
+                .expect("pane has a process id")
+        };
+
+        manager
+            .close_pane("native-close-kill-user", &info.id, &new_pane.id)
+            .await
+            .expect("close pane");
+
+        // Give the kernel a moment to reap the child.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !process_exists(pid),
+            "closed pane's shell process should no longer be alive"
+        );
+
+        manager
+            .terminate("native-close-kill-user", &info.id)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_close_last_pane_terminates_session() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("native-last-pane-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("native-last-pane-user", "last-pane", &profile, &registry)
+            .await
+            .expect("create session");
+
+        let pane_id = info.active_pane_id.clone().expect("active pane id");
+
+        manager
+            .close_pane("native-last-pane-user", &info.id, &pane_id)
+            .await
+            .expect("close last pane");
+
+        let list = manager
+            .list("native-last-pane-user")
+            .await
+            .expect("list sessions");
+        assert!(
+            !list.iter().any(|s| s.id == info.id),
+            "closing the last pane should terminate the session"
+        );
     }
 }

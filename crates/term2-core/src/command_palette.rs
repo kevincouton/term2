@@ -181,7 +181,7 @@ pub fn default_palette() -> CommandPalette {
         "split_pane_right",
         "Split Pane Right",
         "CMD-D",
-        "pane_group:add_right",
+        "pane:split_right",
     );
     palette.register_shortcut(
         "clear_blocks",
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn palette_shortcut_display() {
         let mut palette = CommandPalette::new();
-        palette.register_shortcut("split", "Split Pane Right", "CMD-D", "pane_group:add_right");
+        palette.register_shortcut("split", "Split Pane Right", "CMD-D", "pane:split_right");
         let results = palette.search("split");
         assert_eq!(results[0].shortcut.as_deref(), Some("CMD-D"));
     }

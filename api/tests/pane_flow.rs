@@ -148,3 +148,88 @@ async fn close_pane_reduces_pane_count() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn websocket_attaches_to_specific_pane() {
+    if backend_is_tmux() {
+        return;
+    }
+    let (addr, client) = spawn_test_server().await;
+    let (session_id, _initial_pane_id) = create_bash_session(&addr, &client).await;
+
+    // Split so there is a second pane to target.
+    let split_resp = client
+        .post(format!("http://{addr}/api/v1/sessions/{session_id}/panes"))
+        .json(&serde_json::json!({ "direction": "right" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(split_resp.status().is_success());
+    let new_pane: term2_core::PaneInfo = split_resp.json().await.unwrap();
+
+    // Connect to the pane-specific WebSocket endpoint.
+    let ws_url = format!(
+        "ws://{addr}/api/v1/sessions/{session_id}/panes/{}/ws",
+        new_pane.id
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    ws.send(Message::Text("echo pane-specific-ws-ok\n".into()))
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut buffer = Vec::new();
+    loop {
+        let msg = tokio::time::timeout_at(deadline, ws.next())
+            .await
+            .expect("timed out")
+            .expect("stream ended")
+            .expect("ws error");
+        if let Message::Binary(data) = msg {
+            buffer.extend_from_slice(&data);
+            if String::from_utf8_lossy(&buffer).contains("pane-specific-ws-ok") {
+                break;
+            }
+        }
+    }
+
+    client
+        .delete(format!("http://{addr}/api/v1/sessions/{session_id}"))
+        .send()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn close_last_pane_terminates_session() {
+    if backend_is_tmux() {
+        return;
+    }
+    let (addr, client) = spawn_test_server().await;
+    let (session_id, active_pane_id) = create_bash_session(&addr, &client).await;
+
+    let close_resp = client
+        .delete(format!(
+            "http://{addr}/api/v1/sessions/{session_id}/panes/{active_pane_id}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(close_resp.status(), reqwest::StatusCode::NO_CONTENT);
+
+    let list_resp = client
+        .get(format!("http://{addr}/api/v1/sessions"))
+        .send()
+        .await
+        .unwrap();
+    assert!(list_resp.status().is_success());
+    let sessions: Vec<serde_json::Value> = list_resp.json().await.unwrap();
+    assert!(
+        !sessions
+            .iter()
+            .any(|s| s["id"].as_str() == Some(&session_id)),
+        "closing the last pane should terminate the session"
+    );
+}

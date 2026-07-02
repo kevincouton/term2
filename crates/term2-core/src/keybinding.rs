@@ -73,7 +73,6 @@ impl KeybindingSet {
 /// Default Warp shortcuts mapped to action commands.
 pub fn default_keybindings() -> KeybindingSet {
     let mut kb = KeybindingSet::new();
-    kb.bind(Shortcut::parse("CMD-D").unwrap(), "pane_group:add_right");
     kb.bind(
         Shortcut::parse("CTRL-CMD-L").unwrap(),
         "workspace:toggle_launch_config_palette",

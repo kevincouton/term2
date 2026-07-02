@@ -20,7 +20,7 @@ pub struct Window {
 }
 
 impl Window {
-    pub async fn new(
+    pub fn new(
         session_id: impl Into<String>,
         window_id: impl Into<String>,
         title: impl Into<String>,
@@ -72,11 +72,15 @@ impl Window {
         profile: &Profile,
         registry: &ProfileRegistry,
     ) -> Result<PaneInfo> {
+        let active_pane = self
+            .active_pane()
+            .ok_or_else(|| crate::Error::SessionNotFound(self.active_pane_id.clone()))?;
+        let session_id = active_pane.session_id.clone();
         let new_pane_id = Uuid::new_v4().to_string();
         let pane_scrollback = self.scrollback_root.join(&new_pane_id);
         let pane = Pane::from_profile(
             &new_pane_id,
-            &self.panes[&self.active_pane_id].session_id,
+            &session_id,
             &self.title,
             profile,
             registry,
@@ -91,7 +95,10 @@ impl Window {
         Ok(info)
     }
 
-    pub fn close_pane(&mut self, pane_id: &PaneId) -> Result<bool> {
+    /// Remove `pane_id` from the window and return the removed pane together
+    /// with a flag indicating whether the window is now empty (the caller
+    /// should terminate the session in that case).
+    pub fn close_pane(&mut self, pane_id: &PaneId) -> Result<(Pane, bool)> {
         if !self.panes.contains_key(pane_id) {
             return Err(crate::Error::SessionNotFound(pane_id.clone()));
         }
@@ -100,15 +107,13 @@ impl Window {
         // the session instead of keeping an empty layout.
         if self.panes.len() == 1 {
             let pane = self.panes.remove(pane_id).expect("pane verified above");
-            pane.native_session.kill_now();
-            return Ok(true);
+            return Ok((pane, true));
         }
 
         self.layout
             .remove_pane(pane_id)
             .map_err(|e| crate::Error::SessionNotFound(e.to_string()))?;
         let pane = self.panes.remove(pane_id).expect("pane verified above");
-        pane.native_session.kill_now();
 
         if self.active_pane_id == *pane_id {
             self.active_pane_id = self
@@ -117,7 +122,7 @@ impl Window {
                 .cloned()
                 .unwrap_or_else(|| self.panes.keys().next().unwrap().clone());
         }
-        Ok(false)
+        Ok((pane, false))
     }
 
     pub fn focus_pane(&mut self, pane_id: &PaneId) -> Result<()> {
@@ -173,9 +178,7 @@ mod tests {
         let registry = test_registry("window-starts");
         let profile = registry.get("bash").unwrap();
         let dir = test_scrollback_dir("starts");
-        let window = Window::new("session-1", "win-1", "main", &profile, &registry, dir)
-            .await
-            .unwrap();
+        let window = Window::new("session-1", "win-1", "main", &profile, &registry, dir).unwrap();
         assert_eq!(window.list_panes().len(), 1);
         assert_eq!(window.active_pane_id, window.list_panes()[0].id);
         window.kill_all_panes().await.unwrap();
@@ -186,9 +189,8 @@ mod tests {
         let registry = test_registry("window-split");
         let profile = registry.get("bash").unwrap();
         let dir = test_scrollback_dir("split");
-        let mut window = Window::new("session-1", "win-1", "main", &profile, &registry, dir)
-            .await
-            .unwrap();
+        let mut window =
+            Window::new("session-1", "win-1", "main", &profile, &registry, dir).unwrap();
         let original_id = window.active_pane_id.clone();
 
         let info = window
@@ -207,9 +209,8 @@ mod tests {
         let registry = test_registry("window-layout");
         let profile = registry.get("bash").unwrap();
         let dir = test_scrollback_dir("layout");
-        let mut window = Window::new("session-1", "win-1", "main", &profile, &registry, dir)
-            .await
-            .unwrap();
+        let mut window =
+            Window::new("session-1", "win-1", "main", &profile, &registry, dir).unwrap();
         let original_id = window.active_pane_id.clone();
 
         window
@@ -227,16 +228,15 @@ mod tests {
         let registry = test_registry("window-close");
         let profile = registry.get("bash").unwrap();
         let dir = test_scrollback_dir("close");
-        let mut window = Window::new("session-1", "win-1", "main", &profile, &registry, dir)
-            .await
-            .unwrap();
+        let mut window =
+            Window::new("session-1", "win-1", "main", &profile, &registry, dir).unwrap();
         let original_id = window.active_pane_id.clone();
         let info = window
             .split_active_pane(SplitDirection::Vertical, &profile, &registry)
             .unwrap();
         let new_id = info.id;
 
-        let empty = window.close_pane(&new_id).unwrap();
+        let (_pane, empty) = window.close_pane(&new_id).unwrap();
         assert!(!empty);
         assert_eq!(window.list_panes().len(), 1);
         assert!(!window.panes.contains_key(&new_id));
@@ -250,12 +250,11 @@ mod tests {
         let registry = test_registry("window-empty");
         let profile = registry.get("bash").unwrap();
         let dir = test_scrollback_dir("empty");
-        let mut window = Window::new("session-1", "win-1", "main", &profile, &registry, dir)
-            .await
-            .unwrap();
+        let mut window =
+            Window::new("session-1", "win-1", "main", &profile, &registry, dir).unwrap();
         let pane_id = window.active_pane_id.clone();
 
-        let empty = window.close_pane(&pane_id).unwrap();
+        let (_pane, empty) = window.close_pane(&pane_id).unwrap();
         assert!(empty);
         assert!(window.panes.is_empty());
     }
@@ -265,9 +264,8 @@ mod tests {
         let registry = test_registry("window-focus");
         let profile = registry.get("bash").unwrap();
         let dir = test_scrollback_dir("focus");
-        let mut window = Window::new("session-1", "win-1", "main", &profile, &registry, dir)
-            .await
-            .unwrap();
+        let mut window =
+            Window::new("session-1", "win-1", "main", &profile, &registry, dir).unwrap();
         let original_id = window.active_pane_id.clone();
         let info = window
             .split_active_pane(SplitDirection::Vertical, &profile, &registry)
@@ -286,9 +284,8 @@ mod tests {
         let registry = test_registry("window-focus-unknown");
         let profile = registry.get("bash").unwrap();
         let dir = test_scrollback_dir("focus-unknown");
-        let mut window = Window::new("session-1", "win-1", "main", &profile, &registry, dir)
-            .await
-            .unwrap();
+        let mut window =
+            Window::new("session-1", "win-1", "main", &profile, &registry, dir).unwrap();
 
         let err = window.focus_pane(&"unknown-pane".to_string()).unwrap_err();
         assert!(matches!(err, crate::Error::SessionNotFound(id) if id == "unknown-pane"));
@@ -300,9 +297,8 @@ mod tests {
         let registry = test_registry("window-focused");
         let profile = registry.get("bash").unwrap();
         let dir = test_scrollback_dir("focused");
-        let mut window = Window::new("session-1", "win-1", "main", &profile, &registry, dir)
-            .await
-            .unwrap();
+        let mut window =
+            Window::new("session-1", "win-1", "main", &profile, &registry, dir).unwrap();
         let original_id = window.active_pane_id.clone();
         let info = window
             .split_active_pane(SplitDirection::Vertical, &profile, &registry)
@@ -325,9 +321,7 @@ mod tests {
         let registry = test_registry("window-active");
         let profile = registry.get("bash").unwrap();
         let dir = test_scrollback_dir("active");
-        let window = Window::new("session-1", "win-1", "main", &profile, &registry, dir)
-            .await
-            .unwrap();
+        let window = Window::new("session-1", "win-1", "main", &profile, &registry, dir).unwrap();
         let active_id = window.active_pane_id.clone();
 
         assert_eq!(window.active_pane().unwrap().id, active_id);
@@ -341,9 +335,7 @@ mod tests {
         let registry = test_registry("window-attach");
         let profile = registry.get("bash").unwrap();
         let dir = test_scrollback_dir("attach");
-        let window = Window::new("session-1", "win-1", "main", &profile, &registry, dir)
-            .await
-            .unwrap();
+        let window = Window::new("session-1", "win-1", "main", &profile, &registry, dir).unwrap();
 
         let session = window.attach_active().expect("attach active pane");
         assert_eq!(session.id, window.active_pane_id);
