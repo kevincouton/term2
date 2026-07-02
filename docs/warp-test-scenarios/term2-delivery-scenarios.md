@@ -2,6 +2,8 @@
 
 These scenarios supplement the 2,751 Warp-derived scenarios in the neighbouring chunk files. They focus on what Term2 actually implements today, what is intentionally out-of-scope for a web terminal multiplexer, and the minimum gaps that should be closed before calling the project delivery-ready.
 
+> **Phase 1 update:** Term2 now uses a native Rust PTY backend by default. `TERM2_BACKEND=tmux` remains available as a legacy fallback. Scenarios below describe the native backend unless the legacy tmux backend is explicitly referenced.
+
 ## Legend
 
 - `implemented` — feature exists and has automated tests.
@@ -16,14 +18,14 @@ These scenarios supplement the 2,751 Warp-derived scenarios in the neighbouring 
 ### Scenario: Create a bash session through the API
 - **Given** the API is running and the user is authenticated as `dev`.
 - **When** `POST /api/v1/sessions` is called with `{ "name": "demo", "profile": "bash" }`.
-- **Then** a detached tmux session named `term2-dev-demo` is created and the response contains its `id`, `name`, `profile`, and `created_at`.
+- **Then** a native Rust PTY session named `term2-dev-demo` is created and the response contains its `id`, `name`, `profile`, and `created_at`.
 - **Status:** `implemented`
-- **Coverage:** `api/tests/warp_features.rs`, `e2e/tests/portal.spec.ts`, `crates/term2-core/src/session.rs`
+- **Coverage:** `api/tests/warp_features.rs`, `e2e/tests/portal.spec.ts`, `crates/term2-core/src/session.rs`, `crates/term2-core/src/native_session.rs`
 
 ### Scenario: Reject duplicate session names for the same user
 - **Given** a session named `shared` already exists for user `dev`.
 - **When** the user tries to create another session named `shared`.
-- **Then** the API returns HTTP `409 Conflict` and no second tmux session is created.
+- **Then** the API returns HTTP `409 Conflict` and no second session is created.
 - **Status:** `implemented`
 - **Coverage:** `api/tests/warp_features.rs`, `crates/term2-core/src/session.rs`
 
@@ -37,7 +39,7 @@ These scenarios supplement the 2,751 Warp-derived scenarios in the neighbouring 
 ### Scenario: List sessions isolates users
 - **Given** users `alice` and `bob` each have active sessions.
 - **When** either user lists sessions via `GET /api/v1/sessions`.
-- **Then** they see only their own `term2-<user>-<name>` sessions; other users' Term2 sessions are hidden. Unmanaged tmux sessions are still visible to everyone.
+- **Then** they see only their own `term2-<user>-<name>` sessions; other users' Term2 sessions are hidden. Unmanaged tmux sessions are still visible to everyone when the native backend lists sessions.
 - **Status:** `implemented`
 - **Coverage:** `crates/term2-core/src/session.rs`
 
@@ -51,12 +53,12 @@ These scenarios supplement the 2,751 Warp-derived scenarios in the neighbouring 
 ### Scenario: Kill a session through the API
 - **Given** an active Term2 session.
 - **When** `DELETE /api/v1/sessions/{id}` is called.
-- **Then** the tmux session is terminated, the entry is removed from the store, and subsequent listings no longer include it.
+- **Then** the native PTY process is terminated, the scrollback file is removed, the entry is removed from the store, and subsequent listings no longer include it.
 - **Status:** `implemented`
-- **Coverage:** `api/tests/warp_features.rs`, `e2e/tests/portal.spec.ts`
+- **Coverage:** `api/tests/warp_features.rs`, `e2e/tests/portal.spec.ts`, `crates/term2-core/src/native_session.rs`
 
 ### Scenario: Killing an unknown session returns a clear error
-- **Given** no tmux session with id `does-not-exist`.
+- **Given** no session with id `does-not-exist`.
 - **When** `DELETE /api/v1/sessions/does-not-exist` is called.
 - **Then** the API returns HTTP `500` (current behaviour) and the server logs a session-not-found error.
 - **Status:** `partial`
@@ -77,16 +79,16 @@ These scenarios supplement the 2,751 Warp-derived scenarios in the neighbouring 
 ### Scenario: WebSocket input supports both text and binary frames
 - **Given** an attached session.
 - **When** the client sends keystrokes as both `Message::Text` and `Message::Binary`.
-- **Then** both are forwarded to the tmux PTY input channel.
+- **Then** both are forwarded to the native PTY input channel.
 - **Status:** `implemented`
-- **Coverage:** `api/src/routes/sessions.rs`
+- **Coverage:** `api/src/routes/sessions.rs`, `crates/term2-core/src/native_session.rs`
 
-### Scenario: Closing the WebSocket does not kill the tmux session
+### Scenario: Closing the WebSocket does not kill the native session
 - **Given** a session with an open WebSocket client.
 - **When** the client disconnects.
-- **Then** the tmux session remains running and can be re-attached later.
+- **Then** the native PTY process remains running and can be re-attached later; scrollback is preserved for replay.
 - **Status:** `implemented`
-- **Coverage:** manual / implicit in `session_flow.rs`
+- **Coverage:** `crates/term2-core/src/native_session.rs`, implicit in `session_flow.rs`
 
 ### Scenario: WebSocket fails gracefully for missing session
 - **Given** an invalid session id.
@@ -97,7 +99,53 @@ These scenarios supplement the 2,751 Warp-derived scenarios in the neighbouring 
 
 ---
 
-## 3. Profiles
+## 3. Native PTY Backend
+
+### Scenario: Default backend is native Rust PTY
+- **Given** a fresh `SessionManager` or `AppState` with no `TERM2_BACKEND` environment variable set.
+- **When** sessions are created.
+- **Then** `Backend::Native` is used and no tmux binary is required.
+- **Status:** `implemented`
+- **Coverage:** `crates/term2-core/src/session.rs`
+
+### Scenario: `TERM2_BACKEND=tmux` selects the legacy tmux backend
+- **Given** the `TERM2_BACKEND` environment variable is set to `tmux` and tmux is installed.
+- **When** a session is created.
+- **Then** `Backend::Tmux` is used and the session is backed by a detached tmux session.
+- **Status:** `implemented`
+- **Coverage:** `crates/term2-core/src/session.rs`
+
+### Scenario: Native session spawns bash and exchanges I/O
+- **Given** the native backend is active.
+- **When** a bash session is created and `echo native-ok\n` is written to its PTY.
+- **Then** the PTY output contains `native-ok`.
+- **Status:** `implemented`
+- **Coverage:** `crates/term2-core/src/native_session.rs`, `crates/term2-core/src/pty_manager.rs`
+
+### Scenario: Native session survives manager restart
+- **Given** a native session is running.
+- **When** the `SessionManager` is dropped and recreated with the same store path.
+- **Then** the session is listed again and can be reattached.
+- **Status:** `implemented`
+- **Coverage:** `crates/term2-core/src/session.rs`
+
+### Scenario: Native session scrollback replays on reattach
+- **Given** a native session has emitted output while unattached.
+- **When** a new client attaches via WebSocket.
+- **Then** the buffered scrollback is replayed before new output arrives.
+- **Status:** `implemented`
+- **Coverage:** `crates/term2-core/src/native_session.rs`, `crates/term2-core/src/scrollback.rs`
+
+### Scenario: Native session kill removes scrollback file
+- **Given** a native session has scrollback persisted to disk.
+- **When** the session is terminated.
+- **Then** the scrollback file is removed.
+- **Status:** `implemented`
+- **Coverage:** `crates/term2-core/src/native_session.rs`
+
+---
+
+## 4. Profiles
 
 ### Scenario: Built-in profiles are listed
 - **Given** a fresh API server.
@@ -143,7 +191,7 @@ These scenarios supplement the 2,751 Warp-derived scenarios in the neighbouring 
 
 ---
 
-## 4. Portal UI
+## 5. Portal UI
 
 ### Scenario: Portal renders user pill and profiles
 - **Given** the portal page is loaded.
@@ -182,7 +230,7 @@ These scenarios supplement the 2,751 Warp-derived scenarios in the neighbouring 
 
 ---
 
-## 5. Warp-Inspired UI Gaps
+## 6. Warp-Inspired UI Gaps
 
 These features are documented as `test.fixme` in `e2e/tests/warp-ux.spec.ts`. They are not blockers for a terminal multiplexer but represent the Warp UX parity roadmap.
 
@@ -244,7 +292,7 @@ These features are documented as `test.fixme` in `e2e/tests/warp-ux.spec.ts`. Th
 
 ---
 
-## 6. Core Models
+## 7. Core Models
 
 ### Scenario: Warp Drive objects serialize to JSON
 - **Given** a `WarpDrive` containing workflows, notebooks, prompts, and env-var sets.
@@ -283,7 +331,7 @@ These features are documented as `test.fixme` in `e2e/tests/warp-ux.spec.ts`. Th
 
 ---
 
-## 7. Security & Auth
+## 8. Security & Auth
 
 ### Scenario: Auth headers identify the user
 - **Given** Caddy + Authentik forward-auth injects `Remote-User`, `Remote-Groups`, `Remote-Email`, and `Remote-Name`.
@@ -302,13 +350,13 @@ These features are documented as `test.fixme` in `e2e/tests/warp-ux.spec.ts`. Th
 ### Scenario: Session names are sanitized
 - **Given** a session name with spaces and punctuation.
 - **When** it is passed to `SessionManager::create`.
-- **Then** invalid characters are replaced with `-`, leading/trailing dashes are trimmed, and the tmux session name is deterministic.
+- **Then** invalid characters are replaced with `-`, leading/trailing dashes are trimmed, and the resulting `term2-<user>-<name>` identifier is deterministic.
 - **Status:** `implemented`
 - **Coverage:** `crates/term2-core/src/session.rs`
 
 ---
 
-## 8. Operations & Deployment
+## 9. Operations & Deployment
 
 ### Scenario: Health endpoint returns ok
 - **Given** a running server.
@@ -340,7 +388,7 @@ These features are documented as `test.fixme` in `e2e/tests/warp-ux.spec.ts`. Th
 
 ---
 
-## 9. Out-of-Scope Warp Features
+## 10. Out-of-Scope Warp Features
 
 The following Warp capabilities are intentionally not replicated in Term2 because they are cloud-service, desktop-app, or billing concerns rather than a self-hosted web tmux multiplexer.
 
@@ -355,20 +403,22 @@ These are documented as `out-of-scope` in the chunk files `warp-docs-chunk-03.md
 
 ---
 
-## 10. Delivery Checklist
+## 11. Delivery Checklist
 
 | Item | Status | Notes |
 |------|--------|-------|
 | `cargo fmt --all -- --check` | ✅ passing | |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | ✅ passing | |
-| `cargo test --workspace --all-features` | ✅ passing | 128 passed, 22 ignored |
+| `cargo test --workspace --all-features` | ✅ passing | 152 passed, 22 ignored |
+| `TERM2_BACKEND=tmux cargo test --workspace --all-features` | ✅ passing | 152 passed, 22 ignored |
 | E2E Playwright tests | ✅ passing | 10 passed, 8 fixme |
 | Static asset serving | ✅ implemented | |
 | Auth header extraction | ✅ implemented | |
 | Session isolation per user | ✅ implemented | |
 | Profile system | ✅ implemented | bash, zsh, nushell, ghr + custom |
 | WebSocket terminal I/O | ✅ implemented | |
-| tmux session lifecycle | ✅ implemented | |
+| Native PTY session lifecycle | ✅ implemented | default backend |
+| Legacy tmux session lifecycle | ✅ implemented | `TERM2_BACKEND=tmux` fallback |
 | Warp scenario index | ✅ updated | 2,751 scenarios across 11 chunks |
 | Return 404 for unknown session delete | ⚠️ planned | currently returns 500 |
 | Implement command palette | ⚠️ planned | fixme tests exist |
