@@ -19,8 +19,13 @@ pub fn term2_config_dir() -> PathBuf {
 mod tests {
     use super::*;
 
+    // Environment-variable mutation is process-global, so serialize the tests
+    // that touch `TERM2_CONFIG_DIR` to avoid flakes under parallel execution.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn config_dir_uses_env_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let expected = std::env::temp_dir().join("term2-config-override-test");
         std::env::set_var("TERM2_CONFIG_DIR", &expected);
         let dir = term2_config_dir();
@@ -30,6 +35,7 @@ mod tests {
 
     #[test]
     fn config_dir_falls_back_to_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("TERM2_CONFIG_DIR");
         let dir = term2_config_dir();
         let expected = dirs::config_dir()
