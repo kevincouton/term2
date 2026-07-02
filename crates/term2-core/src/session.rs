@@ -616,13 +616,12 @@ impl SessionManager {
         .await
     }
 
-    pub async fn list_windows(&self, user: &str, session_id: &str) -> Result<Vec<crate::WindowInfo>> {
+    pub async fn list_windows(&self, _user: &str, session_id: &str) -> Result<Vec<crate::WindowInfo>> {
         if self.backend != Backend::Native {
             return Err(Error::BackendNotSupported(
                 "window operations require native backend".to_string(),
             ));
         }
-        let _registry = crate::ProfileRegistry::new(user);
         let sessions = self.sessions.read().await;
         let runtime = sessions
             .get(session_id)
@@ -632,6 +631,123 @@ impl SessionManager {
             .iter()
             .map(|w| w.info(w.id == runtime.active_window_id))
             .collect())
+    }
+
+    pub async fn create_window(
+        &self,
+        user: &str,
+        session_id: &str,
+        profile: &crate::Profile,
+        registry: &crate::ProfileRegistry,
+    ) -> Result<crate::WindowInfo> {
+        if self.backend != Backend::Native {
+            return Err(Error::BackendNotSupported(
+                "window operations require native backend".to_string(),
+            ));
+        }
+        let window_id = uuid::Uuid::new_v4().to_string();
+        let mut sessions = self.sessions.write().await;
+        let runtime = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+        let scrollback_dir = self.scrollback_root.join(session_id).join(&window_id);
+        let window = crate::Window::new(
+            session_id,
+            &window_id,
+            &runtime.name,
+            profile,
+            registry,
+            scrollback_dir,
+        )?;
+        let info = window.info(true);
+        runtime.windows.push(window);
+        runtime.active_window_id = window_id;
+        Ok(info)
+    }
+
+    pub async fn close_window(
+        &self,
+        user: &str,
+        session_id: &str,
+        window_id: &str,
+    ) -> Result<()> {
+        if self.backend != Backend::Native {
+            return Err(Error::BackendNotSupported(
+                "window operations require native backend".to_string(),
+            ));
+        }
+        let should_terminate_session = {
+            let mut sessions = self.sessions.write().await;
+            let runtime = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+            let idx = runtime
+                .windows
+                .iter()
+                .position(|w| w.id == window_id)
+                .ok_or_else(|| Error::SessionNotFound(window_id.to_string()))?;
+            let window = runtime.windows.remove(idx);
+            window.kill_all_panes().await?;
+            if runtime.windows.is_empty() {
+                true
+            } else {
+                if runtime.active_window_id == window_id {
+                    runtime.active_window_id = runtime.windows[0].id.clone();
+                }
+                false
+            }
+        };
+        if should_terminate_session {
+            self.terminate(user, session_id).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn rename_window(
+        &self,
+        _user: &str,
+        session_id: &str,
+        window_id: &str,
+        title: &str,
+    ) -> Result<()> {
+        if self.backend != Backend::Native {
+            return Err(Error::BackendNotSupported(
+                "window operations require native backend".to_string(),
+            ));
+        }
+        let mut sessions = self.sessions.write().await;
+        let runtime = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+        let window = runtime
+            .windows
+            .iter_mut()
+            .find(|w| w.id == window_id)
+            .ok_or_else(|| Error::SessionNotFound(window_id.to_string()))?;
+        window.title = title.to_string();
+        Ok(())
+    }
+
+    pub async fn focus_window(
+        &self,
+        _user: &str,
+        session_id: &str,
+        window_id: &str,
+    ) -> Result<()> {
+        if self.backend != Backend::Native {
+            return Err(Error::BackendNotSupported(
+                "window operations require native backend".to_string(),
+            ));
+        }
+        let mut sessions = self.sessions.write().await;
+        let runtime = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+        if !runtime.windows.iter().any(|w| w.id == window_id) {
+            return Err(Error::SessionNotFound(window_id.to_string()));
+        }
+        runtime.active_window_id = window_id.to_string();
+        Ok(())
     }
 
     pub async fn split_pane(
@@ -1314,6 +1430,159 @@ mod tests {
         assert_eq!(windows[0].id, info.active_window_id.unwrap());
 
         manager.terminate("window-test-user", &info.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_window_adds_tab() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("create-window-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("create-window-user", "create-window", &profile, &registry)
+            .await
+            .unwrap();
+
+        let initial = manager
+            .list_windows("create-window-user", &info.id)
+            .await
+            .unwrap();
+        assert_eq!(initial.len(), 1);
+
+        let new_window = manager
+            .create_window("create-window-user", &info.id, &profile, &registry)
+            .await
+            .unwrap();
+
+        let windows = manager
+            .list_windows("create-window-user", &info.id)
+            .await
+            .unwrap();
+        assert_eq!(windows.len(), 2);
+        assert!(windows.iter().any(|w| w.id == new_window.id));
+        assert!(new_window.is_focused);
+
+        manager.terminate("create-window-user", &info.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn focus_window_changes_active_window() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("focus-window-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("focus-window-user", "focus-window", &profile, &registry)
+            .await
+            .unwrap();
+        let first_id = info.active_window_id.unwrap();
+
+        let second = manager
+            .create_window("focus-window-user", &info.id, &profile, &registry)
+            .await
+            .unwrap();
+
+        let windows = manager
+            .list_windows("focus-window-user", &info.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            windows.iter().find(|w| w.is_focused).unwrap().id,
+            second.id
+        );
+
+        manager
+            .focus_window("focus-window-user", &info.id, &first_id)
+            .await
+            .unwrap();
+
+        let windows = manager
+            .list_windows("focus-window-user", &info.id)
+            .await
+            .unwrap();
+        assert_eq!(windows.iter().find(|w| w.is_focused).unwrap().id, first_id);
+
+        manager.terminate("focus-window-user", &info.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn close_window_removes_tab() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("close-window-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("close-window-user", "close-window", &profile, &registry)
+            .await
+            .unwrap();
+        let first_id = info.active_window_id.unwrap();
+
+        let second = manager
+            .create_window("close-window-user", &info.id, &profile, &registry)
+            .await
+            .unwrap();
+
+        manager
+            .close_window("close-window-user", &info.id, &second.id)
+            .await
+            .unwrap();
+
+        let windows = manager
+            .list_windows("close-window-user", &info.id)
+            .await
+            .unwrap();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].id, first_id);
+        assert!(windows[0].is_focused);
+
+        manager.terminate("close-window-user", &info.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn close_last_window_terminates_session() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("close-last-window-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("close-last-window-user", "close-last-window", &profile, &registry)
+            .await
+            .unwrap();
+        let window_id = info.active_window_id.unwrap();
+
+        manager
+            .close_window("close-last-window-user", &info.id, &window_id)
+            .await
+            .unwrap();
+
+        let list = manager.list("close-last-window-user").await.unwrap();
+        assert!(!list.iter().any(|s| s.id == info.id));
+    }
+
+    #[tokio::test]
+    async fn rename_window_updates_title() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("rename-window-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("rename-window-user", "rename-window", &profile, &registry)
+            .await
+            .unwrap();
+        let window_id = info.active_window_id.unwrap();
+
+        manager
+            .rename_window("rename-window-user", &info.id, &window_id, "renamed-title")
+            .await
+            .unwrap();
+
+        let windows = manager
+            .list_windows("rename-window-user", &info.id)
+            .await
+            .unwrap();
+        assert_eq!(windows[0].title, "renamed-title");
+
+        manager.terminate("rename-window-user", &info.id).await.unwrap();
     }
 
     #[tokio::test]
