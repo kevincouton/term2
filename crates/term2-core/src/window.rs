@@ -12,11 +12,23 @@ use crate::{Result, Session};
 
 pub struct Window {
     pub id: String,
+    pub session_id: String,
     pub title: String,
+    pub color: Option<crate::TabColor>,
     pub layout: LayoutNode,
     pub active_pane_id: PaneId,
     panes: HashMap<PaneId, Pane>,
     scrollback_root: PathBuf,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct WindowInfo {
+    pub id: String,
+    pub session_id: String,
+    pub title: String,
+    pub color: Option<crate::TabColor>,
+    pub active_pane_id: String,
+    pub is_focused: bool,
 }
 
 impl Window {
@@ -46,7 +58,9 @@ impl Window {
         panes.insert(pane_id.clone(), pane);
         Ok(Self {
             id: window_id,
+            session_id,
             title,
+            color: None,
             layout: LayoutNode::Pane(pane_id.clone()),
             active_pane_id: pane_id,
             panes,
@@ -160,6 +174,17 @@ impl Window {
             pane.kill().await?;
         }
         Ok(())
+    }
+
+    pub fn info(&self, is_focused: bool) -> WindowInfo {
+        WindowInfo {
+            id: self.id.clone(),
+            session_id: self.session_id.clone(),
+            title: self.title.clone(),
+            color: self.color,
+            active_pane_id: self.active_pane_id.clone(),
+            is_focused,
+        }
     }
 }
 
@@ -343,6 +368,20 @@ mod tests {
 
         let session = window.attach_active().expect("attach active pane");
         assert_eq!(session.id, window.active_pane_id);
+        window.kill_all_panes().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn window_stores_session_id_and_color() {
+        let registry = test_registry("window-color");
+        let profile = registry.get("bash").unwrap();
+        let dir = test_scrollback_dir("color");
+        let window = Window::new("session-42", "win-1", "main", &profile, &registry, dir).unwrap();
+        assert_eq!(window.session_id, "session-42");
+        assert!(window.color.is_none());
+        let info = window.info(false);
+        assert_eq!(info.session_id, "session-42");
+        assert_eq!(info.title, "main");
         window.kill_all_panes().await.unwrap();
     }
 }

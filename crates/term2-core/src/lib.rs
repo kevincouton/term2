@@ -26,7 +26,7 @@ pub use command_palette::{CommandPalette, PaletteItem, PaletteItemKind, PaletteS
 pub use completions::{CompletionEngine, CompletionItem, CompletionKind, HistoryStore};
 pub use input_editor::InputEditor;
 pub use keybinding::{KeybindingSet, Shortcut};
-pub use launch_config::LaunchConfig;
+pub use launch_config::{LaunchConfig, TabColor};
 pub use layout::{LayoutNode, SplitDirection};
 pub use native_session::NativeSession;
 pub use notification::{Notification, NotificationMailbox, NotificationType, TabStatus};
