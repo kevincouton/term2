@@ -10,6 +10,16 @@ use crate::profile::{Profile, ProfileRegistry};
 use crate::scrollback::{BroadcastMessage, ReplaySender};
 use crate::Window;
 
+#[allow(dead_code)]
+struct SessionRuntime {
+    user: String,
+    name: String,
+    profile: String,
+    created_at: u64,
+    windows: Vec<Window>,
+    active_window_id: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("session not found: {0}")]
@@ -48,6 +58,8 @@ pub struct SessionInfo {
     pub attached: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_pane_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_window_id: Option<String>,
 }
 
 /// Backend used by `SessionManager` to run shell sessions.
@@ -87,8 +99,8 @@ pub struct SessionManager {
     scrollback_root: PathBuf,
     tmux_socket: Option<PathBuf>,
     backend: Backend,
-    // Active windows, keyed by session id. One window per session in this slice.
-    windows: Arc<RwLock<HashMap<String, Window>>>,
+    // Active runtimes, keyed by session id. One runtime per session in this slice.
+    sessions: Arc<RwLock<HashMap<String, SessionRuntime>>>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -124,7 +136,7 @@ impl SessionManager {
             scrollback_root,
             tmux_socket: None,
             backend: Backend::from_env_or_default(),
-            windows: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -192,14 +204,9 @@ impl SessionManager {
 
         let scrollback_dir = self.scrollback_root.join(&id);
         let window = Window::new(&id, &id, &name, profile, registry, scrollback_dir.clone())?;
-        let info = SessionInfo {
-            id: id.clone(),
-            name: name.clone(),
-            profile: profile.name.clone(),
-            created_at: window.active_pane().unwrap().native_session.info.created_at,
-            attached: false,
-            active_pane_id: Some(window.active_pane_id.clone()),
-        };
+        let window_id = window.id.clone();
+        let active_pane_id = window.active_pane_id.clone();
+        let created_at = window.active_pane().unwrap().native_session.info.created_at;
         let pid = window.active_pane().unwrap().native_session.process_id();
 
         {
@@ -210,7 +217,7 @@ impl SessionManager {
                     user: user.to_string(),
                     name: name.clone(),
                     profile: profile.name.clone(),
-                    created_at: info.created_at,
+                    created_at,
                     pid,
                 },
             );
@@ -218,11 +225,29 @@ impl SessionManager {
         }
 
         {
-            let mut windows = self.windows.write().await;
-            windows.insert(id, window);
+            let mut sessions = self.sessions.write().await;
+            sessions.insert(
+                id.clone(),
+                SessionRuntime {
+                    user: user.to_string(),
+                    name: name.clone(),
+                    profile: profile.name.clone(),
+                    created_at,
+                    windows: vec![window],
+                    active_window_id: window_id.clone(),
+                },
+            );
         }
 
-        Ok(info)
+        Ok(SessionInfo {
+            id: id.clone(),
+            name: name.clone(),
+            profile: profile.name.clone(),
+            created_at,
+            attached: false,
+            active_pane_id: Some(active_pane_id),
+            active_window_id: Some(window_id),
+        })
     }
 
     async fn create_tmux(
@@ -293,6 +318,7 @@ impl SessionManager {
             created_at,
             attached: false,
             active_pane_id: None,
+            active_window_id: None,
         })
     }
 
@@ -325,7 +351,8 @@ impl SessionManager {
                     profile: metadata.profile.clone(),
                     created_at: metadata.created_at,
                     attached: false,
-                    active_pane_id: None, // filled below if window exists
+                    active_pane_id: None, // filled below if runtime exists
+                    active_window_id: None, // filled below if runtime exists
                 });
             } else {
                 pruned.push(id.clone());
@@ -337,20 +364,25 @@ impl SessionManager {
                 known.remove(id);
             }
             let _ = save_store(&self.store, &known);
-            let mut windows = self.windows.write().await;
+            let mut sessions = self.sessions.write().await;
             for id in &pruned {
-                if let Some(window) = windows.remove(id) {
-                    let _ = window.kill_all_panes().await;
+                if let Some(runtime) = sessions.remove(id) {
+                    for window in runtime.windows {
+                        let _ = window.kill_all_panes().await;
+                    }
                 }
             }
         }
 
-        // Fill active_pane_id from runtime windows.
+        // Fill active_pane_id and active_window_id from runtime windows.
         {
-            let windows = self.windows.read().await;
+            let sessions = self.sessions.read().await;
             for info in &mut infos {
-                if let Some(window) = windows.get(&info.id) {
-                    info.active_pane_id = Some(window.active_pane_id.clone());
+                if let Some(runtime) = sessions.get(&info.id) {
+                    info.active_window_id = Some(runtime.active_window_id.clone());
+                    if let Some(window) = runtime.windows.iter().find(|w| w.id == runtime.active_window_id) {
+                        info.active_pane_id = Some(window.active_pane_id.clone());
+                    }
                 }
             }
         }
@@ -445,6 +477,7 @@ impl SessionManager {
                     created_at,
                     attached,
                     active_pane_id: None,
+                    active_window_id: None,
                 });
             }
         }
@@ -470,9 +503,14 @@ impl SessionManager {
     }
 
     async fn attach_native(&self, id: &str) -> Result<Session> {
-        let windows = self.windows.read().await;
-        let window = windows
+        let sessions = self.sessions.read().await;
+        let runtime = sessions
             .get(id)
+            .ok_or_else(|| Error::SessionNotFound(id.to_string()))?;
+        let window = runtime
+            .windows
+            .iter()
+            .find(|w| w.id == runtime.active_window_id)
             .ok_or_else(|| Error::SessionNotFound(id.to_string()))?;
         window
             .attach_active()
@@ -489,13 +527,16 @@ impl SessionManager {
     ) -> Result<Session> {
         match self.backend {
             Backend::Native => {
-                let windows = self.windows.read().await;
-                let window = windows
+                let sessions = self.sessions.read().await;
+                let runtime = sessions
                     .get(session_id)
                     .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
-                window
-                    .attach_pane(pane_id)
-                    .ok_or_else(|| Error::SessionNotFound(pane_id.to_string()))
+                for window in &runtime.windows {
+                    if let Some(session) = window.attach_pane(pane_id) {
+                        return Ok(session);
+                    }
+                }
+                Err(Error::SessionNotFound(pane_id.to_string()))
             }
             Backend::Tmux => Err(Error::BackendNotSupported(
                 "pane-specific attach requires native backend".to_string(),
@@ -512,13 +553,17 @@ impl SessionManager {
     }
 
     async fn terminate_native(&self, id: &str) -> Result<()> {
-        let window = {
-            let mut windows = self.windows.write().await;
-            windows.remove(id)
+        let runtime = {
+            let mut sessions = self.sessions.write().await;
+            sessions.remove(id)
         };
 
-        match window {
-            Some(w) => w.kill_all_panes().await?,
+        match runtime {
+            Some(mut r) => {
+                for window in r.windows.drain(..) {
+                    window.kill_all_panes().await?;
+                }
+            }
             None => {
                 let known = self.known.read().await;
                 if !known.contains_key(id) {
@@ -569,6 +614,24 @@ impl SessionManager {
             |window, _registry| Ok(window.list_panes()),
         )
         .await
+    }
+
+    pub async fn list_windows(&self, user: &str, session_id: &str) -> Result<Vec<crate::WindowInfo>> {
+        if self.backend != Backend::Native {
+            return Err(Error::BackendNotSupported(
+                "window operations require native backend".to_string(),
+            ));
+        }
+        let _registry = crate::ProfileRegistry::new(user);
+        let sessions = self.sessions.read().await;
+        let runtime = sessions
+            .get(session_id)
+            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+        Ok(runtime
+            .windows
+            .iter()
+            .map(|w| w.info(w.id == runtime.active_window_id))
+            .collect())
     }
 
     pub async fn split_pane(
@@ -623,9 +686,14 @@ impl SessionManager {
             ));
         }
         let registry = crate::ProfileRegistry::new(user);
-        let mut windows = self.windows.write().await;
-        let window = windows
+        let mut sessions = self.sessions.write().await;
+        let runtime = sessions
             .get_mut(session_id)
+            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+        let window = runtime
+            .windows
+            .iter_mut()
+            .find(|w| w.id == runtime.active_window_id)
             .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
         op(window, &registry)
     }
@@ -642,9 +710,14 @@ impl SessionManager {
             ));
         }
         let registry = crate::ProfileRegistry::new(user);
-        let windows = self.windows.read().await;
-        let window = windows
+        let sessions = self.sessions.read().await;
+        let runtime = sessions
             .get(session_id)
+            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+        let window = runtime
+            .windows
+            .iter()
+            .find(|w| w.id == runtime.active_window_id)
             .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
         op(window, &registry)
     }
@@ -1221,6 +1294,29 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[tokio::test]
+    async fn native_session_has_one_default_window() {
+        let store = temp_store();
+        let manager = native_manager(store);
+        let registry = ProfileRegistry::new("window-test-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("window-test-user", "default-window", &profile, &registry)
+            .await
+            .unwrap();
+
+        assert!(info.active_window_id.is_some());
+        let windows = manager
+            .list_windows("window-test-user", &info.id)
+            .await
+            .unwrap();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].id, info.active_window_id.unwrap());
+
+        manager.terminate("window-test-user", &info.id).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn native_bash_session_can_be_created_and_listed() {
         let manager = native_manager(temp_store());
         let registry = ProfileRegistry::new("native-user");
@@ -1730,8 +1826,13 @@ mod tests {
 
         // Capture the OS process id before closing the pane.
         let pid = {
-            let windows = manager.windows.read().await;
-            let window = windows.get(&info.id).expect("window exists");
+            let sessions = manager.sessions.read().await;
+            let runtime = sessions.get(&info.id).expect("runtime exists");
+            let window = runtime
+                .windows
+                .iter()
+                .find(|w| w.id == runtime.active_window_id)
+                .expect("active window exists");
             let pane = window.pane(&new_pane.id).expect("pane exists");
             pane.native_session
                 .process_id()

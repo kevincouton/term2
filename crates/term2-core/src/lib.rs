@@ -41,3 +41,4 @@ pub use warp_drive::{
     Workflow, WorkflowArgument,
 };
 pub use window::Window;
+pub use window::WindowInfo;

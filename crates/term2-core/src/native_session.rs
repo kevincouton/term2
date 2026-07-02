@@ -65,6 +65,7 @@ impl NativeSession {
             created_at: now_secs(),
             attached: false,
             active_pane_id: None,
+            active_window_id: None,
         };
         Self::spawn(id, info, &args, scrollback_dir)
     }
