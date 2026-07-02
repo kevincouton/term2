@@ -182,7 +182,14 @@ impl ProfileRegistry {
     }
 
     fn bash_profile(&self) -> Profile {
-        Profile::new("bash", Shell::Bash)
+        Profile::new("bash", Shell::Bash).with_file(".bashrc", self.default_bashrc())
+    }
+
+    fn default_bashrc(&self) -> String {
+        r#"# Term2 default bashrc
+export TERM2_BASHRC=1
+"#
+        .to_string()
     }
 
     fn zsh_profile(&self) -> Profile {
@@ -240,9 +247,9 @@ impl LaunchArgs {
             builder.env(k, v);
         }
         builder.cwd(&self.cwd);
-        // CommandBuilder::new takes the program; we clear and re-add args.
-        // portable-pty stores argv[0] as the program and additional args separately.
-        builder.arg(&self.command);
+        // `CommandBuilder::new` already supplies argv[0] from the program name.
+        // `self.args[0]` mirrors that program name, so skip it and append the
+        // remaining arguments.
         for arg in self.args.iter().skip(1) {
             builder.arg(arg);
         }
@@ -302,4 +309,106 @@ else
 fi
 "#
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_as_str() {
+        assert_eq!(Shell::Bash.as_str(), "bash");
+        assert_eq!(Shell::Zsh.as_str(), "zsh");
+        assert_eq!(Shell::Nushell.as_str(), "nu");
+    }
+
+    #[test]
+    fn profile_with_file() {
+        let profile = Profile::new("custom", Shell::Bash).with_file(".bashrc", "alias x='y'");
+        assert_eq!(profile.files.get(".bashrc").unwrap(), "alias x='y'");
+    }
+
+    #[test]
+    fn registry_lists_built_in_profiles() {
+        let registry = ProfileRegistry::new("test-user");
+        let names: Vec<_> = registry.list().into_iter().map(|p| p.name).collect();
+        assert!(names.contains(&"bash".to_string()));
+        assert!(names.contains(&"zsh".to_string()));
+        assert!(names.contains(&"nushell".to_string()));
+        assert!(names.contains(&"ghr".to_string()));
+    }
+
+    #[test]
+    fn registry_get_returns_built_in() {
+        let registry = ProfileRegistry::new("test-user");
+        assert!(registry.get("bash").is_some());
+        assert!(registry.get("zsh").is_some());
+        assert!(registry.get("unknown").is_none());
+    }
+
+    #[test]
+    fn registry_ensure_writes_files() {
+        let registry = ProfileRegistry::new(&format!("ensure-test-{}", std::process::id()));
+        let profile = Profile::new("ensure-test", Shell::Bash).with_file(".bashrc", "echo ok");
+        let dir = registry.ensure(&profile).unwrap();
+        assert!(dir.exists());
+        assert!(dir.join(".bashrc").exists());
+        let content = std::fs::read_to_string(dir.join(".bashrc")).unwrap();
+        assert_eq!(content, "echo ok");
+    }
+
+    #[test]
+    fn bash_launch_args_with_rcfile() {
+        let registry = ProfileRegistry::new(&format!("bash-launch-{}", std::process::id()));
+        let profile = registry.get("bash").unwrap();
+        registry.ensure(&profile).unwrap();
+        let args = registry.launch_args(&profile);
+        assert_eq!(args.command, "bash");
+        assert!(args.args.contains(&"-lc".to_string()));
+    }
+
+    #[test]
+    fn zsh_launch_args_sets_zdotdir() {
+        let registry = ProfileRegistry::new(&format!("zsh-launch-{}", std::process::id()));
+        let profile = registry.get("zsh").unwrap();
+        registry.ensure(&profile).unwrap();
+        let args = registry.launch_args(&profile);
+        assert_eq!(args.command, "zsh");
+        assert!(args.env.contains_key("ZDOTDIR"));
+    }
+
+    #[test]
+    fn nushell_launch_args_includes_configs() {
+        let registry = ProfileRegistry::new(&format!("nu-launch-{}", std::process::id()));
+        let profile = registry.get("nushell").unwrap();
+        registry.ensure(&profile).unwrap();
+        let args = registry.launch_args(&profile);
+        assert_eq!(args.command, "nu");
+        assert!(args.args.contains(&"--config".to_string()));
+        assert!(args.args.contains(&"--env-config".to_string()));
+    }
+
+    #[test]
+    fn sanitize_profile_user_name() {
+        assert_eq!(sanitize("kevin@example.com"), "kevin_example_com");
+        assert_eq!(sanitize("alice-doe"), "alice-doe");
+    }
+
+    #[test]
+    fn custom_profile_loaded_from_directory() {
+        let user = format!("custom-profile-{}", std::process::id());
+        let registry = ProfileRegistry::new(&user);
+        let profile = Profile::new("myprofile", Shell::Bash).with_file(".bashrc", "# custom");
+        registry.ensure(&profile).unwrap();
+
+        let loaded = registry.get("myprofile").unwrap();
+        assert_eq!(loaded.name, "myprofile");
+        assert_eq!(loaded.files.get(".bashrc").unwrap(), "# custom");
+    }
+
+    #[test]
+    #[ignore = "shell availability depends on environment"]
+    fn shell_binary_availability() {
+        assert!(Shell::Bash.is_available());
+    }
 }

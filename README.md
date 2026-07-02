@@ -186,6 +186,12 @@ To create a custom profile, create a directory and add files; the directory name
 
 ---
 
+## 🗺️ Roadmap
+
+Term2 is evolving into a self-contained web terminal multiplexer that subsumes the core behaviors of **tmux**, **ttyd**, and **Warp UI**. See [`docs/ROADMAP.md`](./docs/ROADMAP.md) for the full phased plan (9 phases, ~6–9 months) and starter status tracker.
+
+---
+
 ## 📜 License
 
 MIT — see [LICENSE](./LICENSE).

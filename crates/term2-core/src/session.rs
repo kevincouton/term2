@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error};
 
+use crate::native_session::NativeSession;
 use crate::profile::{Profile, ProfileRegistry};
 
 #[derive(Debug, thiserror::Error)]
@@ -18,6 +19,8 @@ pub enum Error {
     ProfileNotFound(String),
     #[error("tmux error: {0}")]
     Tmux(String),
+    #[error("backend error: {0}")]
+    Backend(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("session name already exists")]
@@ -42,12 +45,44 @@ pub struct SessionInfo {
     pub attached: bool,
 }
 
+/// Backend used by `SessionManager` to run shell sessions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Backend {
+    /// Rust-native PTY backend (default).
+    #[default]
+    Native,
+    /// Legacy tmux backend.
+    Tmux,
+}
+
+impl Backend {
+    /// Parse a backend name. Returns `None` for unknown values.
+    pub fn from_env(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "native" => Some(Backend::Native),
+            "tmux" => Some(Backend::Tmux),
+            _ => None,
+        }
+    }
+
+    fn from_env_or_default() -> Self {
+        std::env::var("TERM2_BACKEND")
+            .ok()
+            .and_then(|v| Backend::from_env(&v))
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Clone)]
 pub struct SessionManager {
-    // Keeps track of which tmux sessions are currently known so we can
+    // Keeps track of which sessions are currently known so we can
     // reject duplicate friendly names for the same user.
     known: Arc<RwLock<HashMap<String, SessionMetadata>>>,
     store: PathBuf,
+    tmux_socket: Option<PathBuf>,
+    backend: Backend,
+    // Active native sessions, keyed by session id.
+    native_sessions: Arc<RwLock<HashMap<String, NativeSession>>>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -56,6 +91,8 @@ struct SessionMetadata {
     name: String,
     profile: String,
     created_at: u64,
+    #[serde(default)]
+    pid: Option<u32>,
 }
 
 impl Default for SessionManager {
@@ -74,11 +111,55 @@ impl SessionManager {
         Self {
             known: Arc::new(RwLock::new(known)),
             store,
+            tmux_socket: None,
+            backend: Backend::from_env_or_default(),
+            native_sessions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Create a new tmux-backed session for `user` named `name` using `profile`.
+    /// Use a dedicated tmux socket for all tmux commands issued by this manager.
+    /// This is useful for tests that need to isolate their tmux server from
+    /// other concurrent tests.
+    pub fn with_tmux_socket<P: Into<PathBuf>>(mut self, socket: P) -> Self {
+        self.tmux_socket = Some(socket.into());
+        self
+    }
+
+    /// Select the backend used by this manager. Defaults to `Native`, or the
+    /// value of the `TERM2_BACKEND` environment variable.
+    pub fn with_backend(mut self, backend: Backend) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Return the backend configured for this manager.
+    pub fn backend(&self) -> Backend {
+        self.backend
+    }
+
+    fn tmux_cmd(&self) -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new("tmux");
+        if let Some(socket) = &self.tmux_socket {
+            cmd.arg("-S").arg(socket);
+        }
+        cmd
+    }
+
+    /// Create a new session for `user` named `name` using `profile`.
     pub async fn create(
+        &self,
+        user: &str,
+        name: &str,
+        profile: &Profile,
+        registry: &ProfileRegistry,
+    ) -> Result<SessionInfo> {
+        match self.backend {
+            Backend::Native => self.create_native(user, name, profile, registry).await,
+            Backend::Tmux => self.create_tmux(user, name, profile, registry).await,
+        }
+    }
+
+    async fn create_native(
         &self,
         user: &str,
         name: &str,
@@ -89,7 +170,51 @@ impl SessionManager {
         if name.is_empty() {
             return Err(Error::InvalidName(name));
         }
-        let tmux_name = tmux_name(user, &name);
+        let id = session_id(user, &name);
+
+        // Prevent duplicate friendly names for the same user.
+        {
+            let known = self.known.read().await;
+            if known.contains_key(&id) {
+                return Err(Error::DuplicateSession);
+            }
+        }
+
+        let native = NativeSession::from_profile(&id, user, &name, profile, registry)?;
+        let pid = native.process_id();
+        let info = native.info.clone();
+
+        let mut known = self.known.write().await;
+        known.insert(
+            id.clone(),
+            SessionMetadata {
+                user: user.to_string(),
+                name: name.clone(),
+                profile: profile.name.clone(),
+                created_at: info.created_at,
+                pid,
+            },
+        );
+        let _ = save_store(&self.store, &known);
+
+        let mut native_sessions = self.native_sessions.write().await;
+        native_sessions.insert(id, native);
+
+        Ok(info)
+    }
+
+    async fn create_tmux(
+        &self,
+        user: &str,
+        name: &str,
+        profile: &Profile,
+        registry: &ProfileRegistry,
+    ) -> Result<SessionInfo> {
+        let name = sanitize_name(name);
+        if name.is_empty() {
+            return Err(Error::InvalidName(name));
+        }
+        let tmux_name = session_id(user, &name);
 
         // Prevent duplicate friendly names for the same user.
         {
@@ -104,7 +229,7 @@ impl SessionManager {
         let launch = registry.launch_args(profile);
 
         // Create the tmux session detached.
-        let mut cmd = tokio::process::Command::new("tmux");
+        let mut cmd = self.tmux_cmd();
         cmd.arg("new-session").arg("-d").arg("-s").arg(&tmux_name);
         for (key, value) in &launch.env {
             cmd.arg("-e").arg(format!("{key}={value}"));
@@ -133,6 +258,7 @@ impl SessionManager {
                     name: name.clone(),
                     profile: profile.name.clone(),
                     created_at,
+                    pid: None,
                 },
             );
             let _ = save_store(&self.store, &known);
@@ -147,10 +273,57 @@ impl SessionManager {
         })
     }
 
-    /// List all tmux sessions owned by `user`.
+    /// List all sessions visible to `user`.
     pub async fn list(&self, user: &str) -> Result<Vec<SessionInfo>> {
-        let prefix = format!("term2-{user}-");
-        let output = match tokio::process::Command::new("tmux")
+        match self.backend {
+            Backend::Native => self.list_native(user).await,
+            Backend::Tmux => self.list_tmux(user).await,
+        }
+    }
+
+    async fn list_native(&self, user: &str) -> Result<Vec<SessionInfo>> {
+        let own_prefix = format!("term2-{user}-");
+        let mut known = self.known.write().await;
+        let mut pruned = Vec::new();
+        let mut infos = Vec::new();
+
+        for (id, metadata) in known.iter() {
+            if !id.starts_with(&own_prefix) {
+                continue;
+            }
+            let alive = match metadata.pid {
+                Some(pid) => process_exists(pid),
+                // If we have no pid we cannot verify liveness; keep it and let
+                // a later terminate handle the cleanup.
+                None => true,
+            };
+            if alive {
+                infos.push(SessionInfo {
+                    id: id.clone(),
+                    name: metadata.name.clone(),
+                    profile: metadata.profile.clone(),
+                    created_at: metadata.created_at,
+                    attached: false,
+                });
+            } else {
+                pruned.push(id.clone());
+            }
+        }
+
+        if !pruned.is_empty() {
+            for id in &pruned {
+                known.remove(id);
+            }
+            let _ = save_store(&self.store, &known);
+        }
+
+        Ok(infos)
+    }
+
+    async fn list_tmux(&self, user: &str) -> Result<Vec<SessionInfo>> {
+        let own_prefix = format!("term2-{user}-");
+        let output = match self
+            .tmux_cmd()
             .args([
                 "list-sessions",
                 "-F",
@@ -165,7 +338,8 @@ impl SessionManager {
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         if !output.status.success() {
-            if stderr.contains("no server running") || stderr.contains("No such file or directory") {
+            if stderr.contains("no server running") || stderr.contains("No such file or directory")
+            {
                 return Ok(Vec::new());
             }
             return Err(Error::Tmux(stderr.into_owned()));
@@ -181,31 +355,48 @@ impl SessionManager {
                 let Some(tmux_name) = parts.next() else {
                     continue;
                 };
-                if !tmux_name.starts_with(&prefix) {
-                    continue;
-                }
                 let created_at = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
                 let attached = parts.next().map(|s| s == "1").unwrap_or(false);
-                let name = tmux_name
-                    .strip_prefix(&prefix)
-                    .unwrap_or(tmux_name)
-                    .to_string();
+
+                let is_own_term2 = tmux_name.starts_with(&own_prefix);
+                let is_other_term2 = tmux_name.starts_with("term2-") && !is_own_term2;
+
+                // Hide other users' Term2 sessions; everything else is visible.
+                if is_other_term2 {
+                    continue;
+                }
+
+                let name = if is_own_term2 {
+                    tmux_name
+                        .strip_prefix(&own_prefix)
+                        .unwrap_or(tmux_name)
+                        .to_string()
+                } else {
+                    tmux_name.to_string()
+                };
 
                 let metadata = known.get(tmux_name).cloned().unwrap_or_else(|| {
+                    let profile = if is_own_term2 {
+                        "bash".to_string()
+                    } else {
+                        "unmanaged".to_string()
+                    };
                     discovered.push((
                         tmux_name.to_string(),
                         SessionMetadata {
                             user: user.to_string(),
                             name: name.clone(),
-                            profile: "bash".to_string(),
+                            profile: profile.clone(),
                             created_at,
+                            pid: None,
                         },
                     ));
                     SessionMetadata {
                         user: user.to_string(),
                         name: name.clone(),
-                        profile: "bash".to_string(),
+                        profile,
                         created_at,
+                        pid: None,
                     }
                 });
 
@@ -230,31 +421,70 @@ impl SessionManager {
         Ok(infos)
     }
 
-    /// Attach a WebSocket client to an existing tmux session.
-    /// `id` is the tmux session name (e.g. `term2-dev-main`).
-    pub async fn attach(&self, user: &str, id: &str) -> Result<Session> {
-        let prefix = format!("term2-{user}-");
-        if !id.starts_with(&prefix) {
-            return Err(Error::SessionNotFound(id.to_string()));
+    /// Attach a WebSocket client to an existing session.
+    /// `id` is the session name (e.g. `term2-dev-main` or `main`).
+    pub async fn attach(&self, _user: &str, id: &str) -> Result<Session> {
+        match self.backend {
+            Backend::Native => self.attach_native(id).await,
+            Backend::Tmux => self.attach_to_tmux(id).await,
         }
-        self.attach_to_tmux(id).await
     }
 
-    /// Kill a tmux session.
-    pub async fn terminate(&self, user: &str, id: &str) -> Result<()> {
-        let prefix = format!("term2-{user}-");
-        if !id.starts_with(&prefix) {
-            return Err(Error::SessionNotFound(id.to_string()));
+    async fn attach_native(&self, id: &str) -> Result<Session> {
+        let native_sessions = self.native_sessions.read().await;
+        let session = native_sessions
+            .get(id)
+            .ok_or_else(|| Error::SessionNotFound(id.to_string()))?;
+        Ok(session.attach())
+    }
+
+    /// Kill a session.
+    pub async fn terminate(&self, _user: &str, id: &str) -> Result<()> {
+        match self.backend {
+            Backend::Native => self.terminate_native(id).await,
+            Backend::Tmux => self.terminate_tmux(id).await,
+        }
+    }
+
+    async fn terminate_native(&self, id: &str) -> Result<()> {
+        let session = {
+            let mut native_sessions = self.native_sessions.write().await;
+            native_sessions.remove(id)
+        };
+
+        match session {
+            Some(s) => s.kill().await?,
+            None => {
+                // The session may have been persisted but is no longer in
+                // memory. Verify it is in the store before reporting success.
+                let known = self.known.read().await;
+                if !known.contains_key(id) {
+                    return Err(Error::SessionNotFound(id.to_string()));
+                }
+            }
         }
 
-        let output = tokio::process::Command::new("tmux")
+        {
+            let mut known = self.known.write().await;
+            known.remove(id);
+            let _ = save_store(&self.store, &known);
+        }
+        Ok(())
+    }
+
+    async fn terminate_tmux(&self, id: &str) -> Result<()> {
+        let output = self
+            .tmux_cmd()
             .args(["kill-session", "-t", id])
             .output()
             .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("session not found") {
+            if stderr.contains("session not found")
+                || stderr.contains("no server running")
+                || stderr.contains("error connecting to")
+            {
                 return Err(Error::SessionNotFound(id.to_string()));
             }
             return Err(Error::Tmux(stderr.into_owned()));
@@ -281,6 +511,10 @@ impl SessionManager {
 
         let mut cmd = portable_pty::CommandBuilder::new("tmux");
         cmd.env("TERM", "xterm-256color");
+        if let Some(socket) = &self.tmux_socket {
+            cmd.arg("-S");
+            cmd.arg(socket.as_os_str());
+        }
         cmd.arg("attach");
         cmd.arg("-t");
         cmd.arg(tmux_name);
@@ -314,9 +548,9 @@ impl SessionManager {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if output_tx_reader.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
+                        // Ignore send errors so a transient lack of receivers
+                        // does not tear down the PTY reader.
+                        let _ = output_tx_reader.send(buf[..n].to_vec());
                     }
                     Err(e) => {
                         error!("tmux reader error: {e}");
@@ -397,7 +631,7 @@ fn sanitize_user(user: &str) -> String {
         .collect()
 }
 
-fn tmux_name(user: &str, name: &str) -> String {
+fn session_id(user: &str, name: &str) -> String {
     format!("term2-{}-{}", sanitize_user(user), name)
 }
 
@@ -408,6 +642,23 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Check whether a process with `pid` is still alive.
+#[cfg(unix)]
+fn process_exists(pid: u32) -> bool {
+    use nix::sys::signal::Signal;
+    use nix::unistd::Pid;
+    nix::sys::signal::kill(Pid::from_raw(pid as i32), Signal::SIGCONT).is_ok()
+        || nix::errno::Errno::last() == nix::errno::Errno::EPERM
+}
+
+#[cfg(not(unix))]
+fn process_exists(_pid: u32) -> bool {
+    // Cross-platform process liveness checks are not yet implemented for the
+    // native backend on non-Unix systems. Returning true keeps the session
+    // visible; terminate will clean it up if it is dead.
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -415,6 +666,7 @@ mod tests {
     use super::*;
 
     static STORE_COUNTER: AtomicU64 = AtomicU64::new(0);
+    static SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn temp_store() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("term2-test-{}", std::process::id()));
@@ -423,15 +675,62 @@ mod tests {
         dir.join(format!("sessions-{n}.json"))
     }
 
+    fn temp_socket() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("term2-tmux-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let n = SOCKET_COUNTER.fetch_add(1, Ordering::SeqCst);
+        dir.join(format!("test-{n}.sock"))
+    }
+
+    async fn cleanup_tmux_socket(socket: &PathBuf) {
+        let _ = tokio::process::Command::new("tmux")
+            .arg("-S")
+            .arg(socket)
+            .args(["kill-server"])
+            .output()
+            .await;
+    }
+
+    fn tmux_cmd(socket: &PathBuf) -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new("tmux");
+        cmd.arg("-S").arg(socket);
+        cmd
+    }
+
+    fn tmux_manager(store: PathBuf, socket: PathBuf) -> SessionManager {
+        SessionManager::new_with_store(store)
+            .with_tmux_socket(socket)
+            .with_backend(Backend::Tmux)
+    }
+
+    fn native_manager(store: PathBuf) -> SessionManager {
+        SessionManager::new_with_store(store).with_backend(Backend::Native)
+    }
+
     #[test]
     fn sanitize_name_trims_invalid() {
         assert_eq!(sanitize_name("hello world!"), "hello-world");
         assert_eq!(sanitize_name("--foo--"), "foo");
     }
 
+    #[test]
+    fn backend_from_env_parses_expected_values() {
+        assert_eq!(Backend::from_env("native"), Some(Backend::Native));
+        assert_eq!(Backend::from_env("NATIVE"), Some(Backend::Native));
+        assert_eq!(Backend::from_env("tmux"), Some(Backend::Tmux));
+        assert_eq!(Backend::from_env("TMUX"), Some(Backend::Tmux));
+        assert_eq!(Backend::from_env("unknown"), None);
+    }
+
+    // ------------------------------------------------------------------
+    // Tmux backend tests
+    // ------------------------------------------------------------------
+
     #[tokio::test]
     async fn bash_session_can_be_created_and_listed() {
-        let manager = SessionManager::new_with_store(temp_store());
+        let socket = temp_socket();
+        cleanup_tmux_socket(&socket).await;
+        let manager = tmux_manager(temp_store(), socket);
         let registry = ProfileRegistry::new("test-user");
         let profile = registry.get("bash").unwrap();
 
@@ -455,12 +754,14 @@ mod tests {
 
     #[tokio::test]
     async fn sessions_survive_manager_restart() {
+        let socket = temp_socket();
+        cleanup_tmux_socket(&socket).await;
         let store = temp_store();
         let registry = ProfileRegistry::new("restart-user");
         let profile = registry.get("zsh").unwrap();
 
         let info = {
-            let manager = SessionManager::new_with_store(store.clone());
+            let manager = tmux_manager(store.clone(), socket.clone());
             manager
                 .create("restart-user", "survives", &profile, &registry)
                 .await
@@ -469,7 +770,7 @@ mod tests {
 
         // Simulate a server restart by creating a brand new SessionManager
         // pointing at the same store.
-        let new_manager = SessionManager::new_with_store(store);
+        let new_manager = tmux_manager(store, socket);
         let list = new_manager
             .list("restart-user")
             .await
@@ -488,15 +789,19 @@ mod tests {
 
     #[tokio::test]
     async fn list_returns_empty_when_no_tmux_server() {
-        let manager = SessionManager::new_with_store(temp_store());
+        let socket = temp_socket();
+        cleanup_tmux_socket(&socket).await;
+        let manager = tmux_manager(temp_store(), socket);
         let list = manager.list("no-server-user").await.expect("list sessions");
         assert!(list.is_empty());
     }
 
     #[tokio::test]
     async fn list_only_returns_sessions_for_requested_user() {
+        let socket = temp_socket();
+        cleanup_tmux_socket(&socket).await;
         let store = temp_store();
-        let manager = SessionManager::new_with_store(store);
+        let manager = tmux_manager(store, socket);
         let registry = ProfileRegistry::new("alice");
         let profile = registry.get("bash").unwrap();
 
@@ -509,15 +814,59 @@ mod tests {
         assert_eq!(alices_list.len(), 1);
         assert_eq!(alices_list[0].id, alice_info.id);
 
+        // Bob cannot see Alice's Term2 session.
         let bobs_list = manager.list("bob").await.expect("list bob sessions");
-        assert!(bobs_list.is_empty());
+        assert!(!bobs_list.iter().any(|s| s.id == alice_info.id));
 
         manager.terminate("alice", &alice_info.id).await.unwrap();
     }
 
     #[tokio::test]
+    async fn list_includes_unmanaged_tmux_sessions() {
+        let socket = temp_socket();
+        cleanup_tmux_socket(&socket).await;
+        let store = temp_store();
+        let manager = tmux_manager(store, socket.clone());
+
+        // Create tmux sessions outside of Term2's naming convention.
+        tmux_cmd(&socket)
+            .args(["new-session", "-d", "-s", "legacy-main"])
+            .output()
+            .await
+            .expect("create legacy-main");
+        tmux_cmd(&socket)
+            .args(["new-session", "-d", "-s", "legacy-lucanian"])
+            .output()
+            .await
+            .expect("create legacy-lucanian");
+
+        let list = manager.list("anyone").await.expect("list sessions");
+        let names: Vec<&str> = list.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"legacy-main"),
+            "legacy-main not in {names:?}"
+        );
+        assert!(
+            names.contains(&"legacy-lucanian"),
+            "legacy-lucanian not in {names:?}"
+        );
+
+        // Both unmanaged sessions are visible and attachable.
+        let main = list.iter().find(|s| s.name == "legacy-main").unwrap();
+        assert_eq!(main.profile, "unmanaged");
+
+        manager.terminate("anyone", "legacy-main").await.unwrap();
+        manager
+            .terminate("anyone", "legacy-lucanian")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn attach_to_session_receives_output() {
-        let manager = SessionManager::new_with_store(temp_store());
+        let socket = temp_socket();
+        cleanup_tmux_socket(&socket).await;
+        let manager = tmux_manager(temp_store(), socket);
         let registry = ProfileRegistry::new("test-user");
         let profile = registry.get("bash").unwrap();
 
@@ -550,5 +899,396 @@ mod tests {
         }
 
         manager.terminate("test-user", &info.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_rejects_duplicate_name_for_same_user() {
+        let socket = temp_socket();
+        cleanup_tmux_socket(&socket).await;
+        let manager = tmux_manager(temp_store(), socket);
+        let registry = ProfileRegistry::new("dup-user");
+        let profile = registry.get("bash").unwrap();
+
+        manager
+            .create("dup-user", "shared", &profile, &registry)
+            .await
+            .expect("first create");
+
+        let result = manager
+            .create("dup-user", "shared", &profile, &registry)
+            .await;
+        assert!(matches!(result, Err(Error::DuplicateSession)));
+
+        // Different user can use the same friendly name.
+        manager
+            .create("other-user", "shared", &profile, &registry)
+            .await
+            .expect("other user create");
+
+        manager
+            .terminate("dup-user", "term2-dup-user-shared")
+            .await
+            .unwrap();
+        manager
+            .terminate("other-user", "term2-other-user-shared")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_rejects_invalid_name() {
+        let socket = temp_socket();
+        cleanup_tmux_socket(&socket).await;
+        let manager = tmux_manager(temp_store(), socket);
+        let registry = ProfileRegistry::new("invalid-user");
+        let profile = registry.get("bash").unwrap();
+
+        let result = manager
+            .create("invalid-user", "!!!", &profile, &registry)
+            .await;
+        assert!(
+            matches!(result, Err(Error::InvalidName(ref name)) if name.is_empty()),
+            "expected InvalidName with empty sanitized name, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn terminate_unknown_session_returns_not_found() {
+        let socket = temp_socket();
+        cleanup_tmux_socket(&socket).await;
+        let manager = tmux_manager(temp_store(), socket);
+        let result = manager.terminate("anyone", "does-not-exist").await;
+        assert!(matches!(result, Err(Error::SessionNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn session_metadata_includes_profile_name() {
+        let socket = temp_socket();
+        cleanup_tmux_socket(&socket).await;
+        let manager = tmux_manager(temp_store(), socket);
+        let registry = ProfileRegistry::new("meta-user");
+        let profile = registry.get("nushell").unwrap();
+
+        let info = manager
+            .create("meta-user", "nu-test", &profile, &registry)
+            .await
+            .expect("create nushell session");
+
+        assert_eq!(info.profile, "nushell");
+        assert!(info.created_at > 0);
+        assert!(!info.attached);
+
+        manager.terminate("meta-user", &info.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_populates_unmanaged_sessions() {
+        let socket = temp_socket();
+        cleanup_tmux_socket(&socket).await;
+        let manager = tmux_manager(temp_store(), socket.clone());
+
+        tmux_cmd(&socket)
+            .args(["new-session", "-d", "-s", "orphan-session"])
+            .output()
+            .await
+            .expect("create orphan");
+
+        let list = manager.list("viewer").await.expect("list");
+        let names: Vec<_> = list.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"orphan-session"));
+
+        let orphan = list.iter().find(|s| s.name == "orphan-session").unwrap();
+        assert_eq!(orphan.profile, "unmanaged");
+
+        manager.terminate("viewer", "orphan-session").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sanitized_name_in_session_id() {
+        let socket = temp_socket();
+        cleanup_tmux_socket(&socket).await;
+        let manager = tmux_manager(temp_store(), socket);
+        let registry = ProfileRegistry::new("san-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("san-user", "my session!", &profile, &registry)
+            .await
+            .expect("create");
+        assert_eq!(info.id, "term2-san-user-my-session");
+        assert_eq!(info.name, "my-session");
+
+        manager.terminate("san-user", &info.id).await.unwrap();
+    }
+
+    // ------------------------------------------------------------------
+    // Native backend tests
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn native_bash_session_can_be_created_and_listed() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("native-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("native-user", "bash-native-test", &profile, &registry)
+            .await
+            .expect("create native bash session");
+
+        assert_eq!(info.profile, "bash");
+        assert!(info.created_at > 0);
+
+        let list = manager.list("native-user").await.expect("list sessions");
+        assert!(list.iter().any(|s| s.id == info.id));
+        assert_eq!(
+            list.iter().find(|s| s.id == info.id).unwrap().profile,
+            "bash"
+        );
+
+        manager
+            .terminate("native-user", &info.id)
+            .await
+            .expect("terminate");
+    }
+
+    #[tokio::test]
+    async fn native_sessions_survive_manager_restart() {
+        let store = temp_store();
+        let registry = ProfileRegistry::new("native-restart-user");
+        let profile = registry.get("zsh").unwrap();
+
+        let info = {
+            let manager = native_manager(store.clone());
+            manager
+                .create("native-restart-user", "survives", &profile, &registry)
+                .await
+                .expect("create native zsh session")
+        };
+
+        // Simulate a server restart by creating a brand new SessionManager
+        // pointing at the same store.
+        let new_manager = native_manager(store);
+        let list = new_manager
+            .list("native-restart-user")
+            .await
+            .expect("list sessions");
+        let found = list
+            .iter()
+            .find(|s| s.id == info.id)
+            .expect("session still listed");
+        assert_eq!(found.profile, "zsh");
+
+        new_manager
+            .terminate("native-restart-user", &info.id)
+            .await
+            .expect("terminate");
+    }
+
+    #[tokio::test]
+    async fn native_list_only_returns_sessions_for_requested_user() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("native-alice");
+        let profile = registry.get("bash").unwrap();
+
+        let alice_info = manager
+            .create("native-alice", "private", &profile, &registry)
+            .await
+            .expect("create alice session");
+
+        let alices_list = manager
+            .list("native-alice")
+            .await
+            .expect("list alice sessions");
+        assert_eq!(alices_list.len(), 1);
+        assert_eq!(alices_list[0].id, alice_info.id);
+
+        // Bob cannot see Alice's Term2 session.
+        let bobs_list = manager.list("native-bob").await.expect("list bob sessions");
+        assert!(!bobs_list.iter().any(|s| s.id == alice_info.id));
+
+        manager
+            .terminate("native-alice", &alice_info.id)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_attach_to_session_receives_output() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("native-attach-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("native-attach-user", "attach-test", &profile, &registry)
+            .await
+            .expect("create native session");
+
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let session = manager
+            .attach("native-attach-user", &info.id)
+            .await
+            .expect("attach");
+
+        session
+            .input
+            .send(b"echo term2-native-attach-ok\n".to_vec())
+            .expect("send input");
+
+        let mut output = session.output.subscribe();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut buffer = Vec::new();
+        loop {
+            let chunk = tokio::time::timeout_at(deadline, output.recv())
+                .await
+                .expect("timed out")
+                .expect("output closed");
+            buffer.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&buffer).contains("term2-native-attach-ok") {
+                break;
+            }
+        }
+
+        manager
+            .terminate("native-attach-user", &info.id)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_create_rejects_duplicate_name_for_same_user() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("native-dup-user");
+        let profile = registry.get("bash").unwrap();
+
+        manager
+            .create("native-dup-user", "shared", &profile, &registry)
+            .await
+            .expect("first create");
+
+        let result = manager
+            .create("native-dup-user", "shared", &profile, &registry)
+            .await;
+        assert!(matches!(result, Err(Error::DuplicateSession)));
+
+        manager
+            .terminate("native-dup-user", "term2-native-dup-user-shared")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_create_rejects_invalid_name() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("native-invalid-user");
+        let profile = registry.get("bash").unwrap();
+
+        let result = manager
+            .create("native-invalid-user", "!!!", &profile, &registry)
+            .await;
+        assert!(
+            matches!(result, Err(Error::InvalidName(ref name)) if name.is_empty()),
+            "expected InvalidName with empty sanitized name, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn native_terminate_unknown_session_returns_not_found() {
+        let manager = native_manager(temp_store());
+        let result = manager.terminate("anyone", "does-not-exist").await;
+        assert!(matches!(result, Err(Error::SessionNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn native_session_metadata_includes_profile_name() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("native-meta-user");
+        let profile = registry.get("nushell").unwrap();
+
+        let info = manager
+            .create("native-meta-user", "nu-test", &profile, &registry)
+            .await
+            .expect("create native nushell session");
+
+        assert_eq!(info.profile, "nushell");
+        assert!(info.created_at > 0);
+        assert!(!info.attached);
+
+        manager
+            .terminate("native-meta-user", &info.id)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_list_prunes_dead_sessions() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("native-prune-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("native-prune-user", "dies", &profile, &registry)
+            .await
+            .expect("create session");
+
+        // Kill the session and wait for the process to exit.
+        manager
+            .terminate("native-prune-user", &info.id)
+            .await
+            .unwrap();
+
+        // Listing should no longer include the dead session.
+        let list = manager.list("native-prune-user").await.expect("list");
+        assert!(!list.iter().any(|s| s.id == info.id));
+    }
+
+    #[tokio::test]
+    async fn native_reattach_shares_output() {
+        let manager = native_manager(temp_store());
+        let registry = ProfileRegistry::new("native-reattach-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("native-reattach-user", "reattach-test", &profile, &registry)
+            .await
+            .expect("create session");
+
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let first = manager
+            .attach("native-reattach-user", &info.id)
+            .await
+            .expect("first attach");
+        let second = manager
+            .attach("native-reattach-user", &info.id)
+            .await
+            .expect("second attach");
+
+        first
+            .input
+            .send(b"echo term2-shared-output\n".to_vec())
+            .expect("send input");
+
+        let mut output = second.output.subscribe();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut buffer = Vec::new();
+        loop {
+            let chunk = tokio::time::timeout_at(deadline, output.recv())
+                .await
+                .expect("timed out")
+                .expect("output closed");
+            buffer.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&buffer).contains("term2-shared-output") {
+                break;
+            }
+        }
+
+        manager
+            .terminate("native-reattach-user", &info.id)
+            .await
+            .unwrap();
     }
 }

@@ -123,4 +123,22 @@ test.describe('portal', () => {
     expect(match).toBeDefined();
     await api.dispose();
   });
+
+  test('kill button removes a session from the portal', async ({ page }) => {
+    const name = `kill-me-${Date.now()}`;
+    await openSession(page, name, 'bash');
+
+    const row = page.locator('#sessions-table tbody tr', { hasText: name });
+    await expect(row).toBeVisible();
+
+    page.on('dialog', (dialog) => dialog.accept());
+    await row.locator('.delete-btn').click();
+
+    await expect(row).toHaveCount(0);
+
+    const api = await Term2Api.create(BASE_URL);
+    const sessions = await api.listSessions();
+    expect(sessions.find((s) => s.name === name)).toBeUndefined();
+    await api.dispose();
+  });
 });

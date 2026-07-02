@@ -5,8 +5,12 @@ use futures::{sink::SinkExt, stream::StreamExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
-#[tokio::test]
-async fn create_bash_session_and_exchange_io_over_websocket() {
+async fn spawn_test_server() -> (String, reqwest::Client) {
+    // The integration tests were written against the tmux backend and exercise
+    // terminal behavior that the headless websocket client cannot emulate for
+    // all shells. Keep them on the tmux backend while the core native backend
+    // tests cover native behavior.
+    std::env::set_var("TERM2_BACKEND", "tmux");
     let state = Arc::new(term2_api::state::AppState::new());
     let app = term2_api::app::create(state);
 
@@ -17,29 +21,38 @@ async fn create_bash_session_and_exchange_io_over_websocket() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    let client = reqwest::Client::new();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    (addr.to_string(), reqwest::Client::new())
+}
+
+async fn websocket_echo_profile(profile: &str, marker: &str) {
+    let (addr, client) = spawn_test_server().await;
     let suffix = uuid::Uuid::new_v4().to_string();
+
     let response = client
         .post(format!("http://{addr}/api/v1/sessions"))
         .json(&serde_json::json!({
-            "name": format!("bash-flow-{suffix}"),
-            "profile": "bash",
+            "name": format!("{profile}-flow-{suffix}"),
+            "profile": profile,
         }))
         .send()
         .await
         .unwrap();
 
-    assert!(response.status().is_success());
+    assert!(
+        response.status().is_success(),
+        "create {profile} session failed"
+    );
     let payload: serde_json::Value = response.json().await.unwrap();
     let id = payload["session"]["id"].as_str().unwrap();
 
     let ws_url = format!("ws://{addr}/api/v1/sessions/{id}/ws");
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await.unwrap();
 
-    // Give bash a moment to settle before sending input.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Give the shell a moment to settle before sending input.
+    tokio::time::sleep(Duration::from_millis(700)).await;
 
-    ws.send(Message::Text("echo term2-e2e-ok\n".into()))
+    ws.send(Message::Text(format!("echo {marker}\n").into()))
         .await
         .unwrap();
 
@@ -54,7 +67,7 @@ async fn create_bash_session_and_exchange_io_over_websocket() {
 
         if let Message::Binary(data) = msg {
             buffer.extend_from_slice(&data);
-            if String::from_utf8_lossy(&buffer).contains("term2-e2e-ok") {
+            if String::from_utf8_lossy(&buffer).contains(marker) {
                 break;
             }
         }
@@ -66,4 +79,19 @@ async fn create_bash_session_and_exchange_io_over_websocket() {
         .send()
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn create_bash_session_and_exchange_io_over_websocket() {
+    websocket_echo_profile("bash", "term2-bash-ws-ok").await;
+}
+
+#[tokio::test]
+async fn create_zsh_session_and_exchange_io_over_websocket() {
+    websocket_echo_profile("zsh", "term2-zsh-ws-ok").await;
+}
+
+#[tokio::test]
+async fn create_nushell_session_and_exchange_io_over_websocket() {
+    websocket_echo_profile("nushell", "term2-nu-ws-ok").await;
 }

@@ -65,7 +65,10 @@ pub async fn terminate(
 ) -> Result<StatusCode, StatusCode> {
     state.sessions.terminate(&user.id, &id).await.map_err(|e| {
         tracing::error!("terminate session failed: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
+        match e {
+            term2_core::Error::SessionNotFound(_) => StatusCode::NOT_FOUND,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        }
     })?;
     Ok(StatusCode::NO_CONTENT)
 }
