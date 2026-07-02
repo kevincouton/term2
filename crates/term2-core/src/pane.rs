@@ -6,7 +6,7 @@ use crate::native_session::NativeSession;
 use crate::profile::{Profile, ProfileRegistry};
 use crate::{Result, Session};
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PaneInfo {
     pub id: String,
     pub session_id: String,
