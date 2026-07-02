@@ -26,6 +26,10 @@ pub fn create(state: Arc<AppState>) -> Router {
             axum::routing::get(routes::sessions::ws),
         )
         .route(
+            "/api/v1/sessions/{id}/panes/{pane_id}/ws",
+            axum::routing::get(routes::sessions::ws_pane),
+        )
+        .route(
             "/api/v1/sessions/{id}/panes",
             axum::routing::get(routes::panes::list).post(routes::panes::split),
         )

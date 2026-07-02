@@ -82,6 +82,30 @@ pub async fn ws(
     ws.on_upgrade(move |socket| handle_socket(socket, state, user, id))
 }
 
+pub async fn ws_pane(
+    Path((session_id, pane_id)): Path<(String, String)>,
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    user: User,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_pane_socket(socket, state, user, session_id, pane_id))
+}
+
+async fn handle_pane_socket(
+    socket: axum::extract::ws::WebSocket,
+    state: Arc<AppState>,
+    user: User,
+    session_id: String,
+    pane_id: String,
+) {
+    // First focus the requested pane, then attach to it.
+    if let Err(e) = state.sessions.focus_pane(&user.id, &session_id, &pane_id).await {
+        tracing::warn!("ws_pane focus failed for {session_id}/{pane_id}: {e}");
+        return;
+    }
+    handle_socket(socket, state, user, session_id).await
+}
+
 async fn handle_socket(
     socket: axum::extract::ws::WebSocket,
     state: Arc<AppState>,
