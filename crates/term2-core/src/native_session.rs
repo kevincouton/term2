@@ -64,6 +64,7 @@ impl NativeSession {
             profile: profile.name.clone(),
             created_at: now_secs(),
             attached: false,
+            active_pane_id: None,
         };
         Self::spawn(id, info, &args, scrollback_dir)
     }
@@ -278,15 +279,17 @@ impl NativeSession {
         result
     }
 
-    /// Synchronous fire-and-forget kill for use during pane cleanup.
+    /// Synchronous best-effort cleanup for use when the pane must be removed
+    /// immediately. This does not wait for tasks to finish but signals shutdown
+    /// and closes the input channel.
     pub fn kill_now(&self) {
-        self.close_input();
-        if let Ok(pty) = self.pty.try_lock() {
-            if let Err(e) = pty.kill() {
-                error!("native session kill_now failed: {e}");
-            }
+        self.shutdown.store(true, Ordering::Relaxed);
+        if let Ok(mut input) = self.input.lock() {
+            input.take();
         }
-        self.shutdown();
+        if let Ok(mut reader) = self.reader.lock() {
+            reader.take();
+        }
     }
 
     /// Return the OS process id, if known.
