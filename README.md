@@ -1,7 +1,7 @@
 > # Term2
 >
 > A **Rust-first, web-based terminal multiplexer** inspired by Warp's modern UX.
-> Create persistent shell sessions from your browser, share them across devices, and run bash, zsh, nushell or the [ghr](https://github.com/chenyukang/ghr) GitHub PR review TUI — all backed by tmux.
+> Create persistent shell sessions from your browser, share them across devices, and run bash, zsh, nushell or the [ghr](https://github.com/chenyukang/ghr) GitHub PR review TUI — backed by a native Rust PTY, with tmux available as a legacy fallback.
 >
 > **Live at [`term2.lucanian.app`](https://term2.lucanian.app)**
 
@@ -11,11 +11,11 @@
 
 Term2 turns a web browser into a first-class terminal client:
 
-- **Session portal** — create, list, open and kill named tmux sessions after login.
+- **Session portal** — create, list, open and kill named shell sessions after login.
 - **Multiple shell profiles** — bash, zsh (with oh-my-zsh), nushell and the [ghr](https://github.com/chenyukang/ghr) GitHub PR review TUI out of the box.
 - **GitHub PR Review tile** — one-click launch of `ghr` to triage, review, comment and merge pull requests.
 - **Custom dotfiles** — drop files into `~/.config/term2/profiles/<user>/<profile>/` and they become selectable profiles.
-- **Persistent sessions** — everything runs inside tmux, so sessions survive page refreshes, network hiccups and reconnects.
+- **Persistent sessions** — native Rust PTY sessions survive page refreshes, network hiccups and reconnects; set `TERM2_BACKEND=tmux` to use the legacy tmux backend instead.
 - **WebSocket terminal** — xterm.js delivers a fast, native-feeling terminal in the browser.
 - **Same auth as the rest of the platform** — Authentik forward-auth via Caddy, identical to `term.lucanian.app`.
 
@@ -33,13 +33,13 @@ Term2 turns a web browser into a first-class terminal client:
                                                             │
                                                             ▼
                                                   ┌────────────────────┐
-                                                  │  tmux sessions     │
+                                                  │  Native PTY        │
                                                   │  bash / zsh / nu   │
                                                   │  ghr (PR review)   │
                                                   └────────────────────┘
 ```
 
-- **`crates/term2-core`** — domain logic: profiles, tmux session lifecycle, portable-pty I/O.
+- **`crates/term2-core`** — domain logic: profiles, native PTY session lifecycle, portable-pty I/O, and the optional tmux legacy backend.
 - **`api/`** — Axum HTTP API and WebSocket attach endpoint.
 - **`web/`** — static SPA (portal + terminal).
 - **`e2e/`** — Playwright end-to-end tests.
@@ -52,7 +52,8 @@ Term2 turns a web browser into a first-class terminal client:
 ### Prerequisites
 
 - Rust stable toolchain
-- `tmux`, `zsh`, `nushell`
+- `zsh`, `nushell` (the shells you want to expose as profiles)
+- (Optional) `tmux` — only needed when running with `TERM2_BACKEND=tmux` (legacy fallback)
 - (Optional) `oh-my-zsh` installed at `/usr/share/oh-my-zsh` for the zsh profile
 - (Optional) `ghr` and an authenticated `gh` CLI for the GitHub PR review tile
 
@@ -74,6 +75,7 @@ open http://localhost:3000
 | `TERM2_HOST` | `0.0.0.0` | Bind address |
 | `TERM2_PORT` | `3000` | Bind port |
 | `TERM2_WEB_DIR` | `web` | Directory served as static files |
+| `TERM2_BACKEND` | `native` | Session backend: `native` (Rust PTY) or `tmux` (legacy fallback) |
 | `RUST_LOG` | `info` | Logging level |
 
 ---
@@ -103,7 +105,7 @@ The E2E suite:
 - creates a bash session and runs a command,
 - creates a zsh session with oh-my-zsh and runs a command,
 - creates a nushell session and runs a command,
-- splits a tmux pane inside a live session.
+- kills a session from the portal.
 
 ### CI locally with `act`
 
@@ -138,10 +140,12 @@ systemctl restart term2.service
 
 ### Production files
 
-- Systemd service: `/etc/systemd/system/term2.service`
+- Systemd service: `/etc/systemd/system/term2.service` (see [`ops/systemd/term2.service`](./ops/systemd/term2.service))
 - Environment: `/etc/term2/env`
 - Caddy site: `term2.lucanian.app` with Authentik `forward_auth`
-- Static assets: `web/` directory under the service working directory
+- Static assets: `web/` directory under the service working directory (`/var/lib/term2`)
+
+> The default systemd unit uses the native Rust PTY backend and does not require tmux. To keep using the legacy tmux backend, set `TERM2_BACKEND=tmux` in `/etc/term2/env` and ensure `tmux` is installed.
 
 ### Auth flow
 
@@ -182,7 +186,7 @@ To create a custom profile, create a directory and add files; the directory name
 - `cargo deny` for license and advisory policy
 - Semgrep SAST rules: `p/rust`, `p/security-audit`, `p/owasp-top-ten`
 - Authentik authentication at the edge
-- Sessions are isolated per user via `term2-<user>-<name>` tmux session names
+- Sessions are isolated per user via `term2-<user>-<name>` identifiers
 
 ---
 

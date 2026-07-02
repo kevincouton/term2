@@ -1,0 +1,23 @@
+[Unit]
+Description=Term2 web terminal multiplexer
+Documentation=https://github.com/kevincouton/term2
+After=network.target
+
+[Service]
+Type=simple
+User=term2
+Group=term2
+WorkingDirectory=/var/lib/term2
+EnvironmentFile=/etc/term2/env
+ExecStart=/usr/local/bin/term2-server
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/term2
+
+[Install]
+WantedBy=multi-user.target

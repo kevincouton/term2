@@ -4,9 +4,8 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 
 async fn spawn_test_server() -> (String, reqwest::Client) {
-    // The integration tests were written against the tmux backend and expect
-    // tmux session naming and lifecycle. Keep them on tmux for now.
-    std::env::set_var("TERM2_BACKEND", "tmux");
+    // Default to the native Rust PTY backend. The tests can be run against the
+    // legacy tmux backend by setting TERM2_BACKEND=tmux before invoking cargo test.
     let state = Arc::new(term2_api::state::AppState::new());
     let app = term2_api::app::create(state);
 
@@ -19,13 +18,6 @@ async fn spawn_test_server() -> (String, reqwest::Client) {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     (addr.to_string(), reqwest::Client::new())
-}
-
-async fn cleanup_tmux() {
-    let _ = tokio::process::Command::new("tmux")
-        .args(["kill-server"])
-        .output()
-        .await;
 }
 
 #[tokio::test]
@@ -54,7 +46,6 @@ async fn profiles_endpoint_lists_built_in_profiles() {
 
 #[tokio::test]
 async fn create_session_with_invalid_profile_returns_bad_request() {
-    cleanup_tmux().await;
     let (addr, client) = spawn_test_server().await;
 
     let response = client
@@ -72,7 +63,6 @@ async fn create_session_with_invalid_profile_returns_bad_request() {
 
 #[tokio::test]
 async fn create_duplicate_session_returns_conflict() {
-    cleanup_tmux().await;
     let (addr, client) = spawn_test_server().await;
 
     let response = client
@@ -107,7 +97,6 @@ async fn create_duplicate_session_returns_conflict() {
 
 #[tokio::test]
 async fn list_sessions_is_scoped_to_user() {
-    cleanup_tmux().await;
     let (addr, client) = spawn_test_server().await;
 
     let suffix = uuid::Uuid::new_v4().to_string();
@@ -172,7 +161,6 @@ async fn list_sessions_is_scoped_to_user() {
 
 #[tokio::test]
 async fn delete_unknown_session_returns_not_found() {
-    cleanup_tmux().await;
     let (addr, client) = spawn_test_server().await;
 
     let response = client
@@ -185,7 +173,6 @@ async fn delete_unknown_session_returns_not_found() {
 
 #[tokio::test]
 async fn create_and_delete_session_removes_it_from_list() {
-    cleanup_tmux().await;
     let (addr, client) = spawn_test_server().await;
 
     let suffix = uuid::Uuid::new_v4().to_string();

@@ -241,8 +241,7 @@ mod tests {
 
     #[tokio::test]
     async fn replay_sender_no_duplicate_output_for_two_subscribers() {
-        let dir =
-            std::env::temp_dir().join(format!("term2-scroll-{}-dup", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("term2-scroll-{}-dup", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let scrollback = Arc::new(Mutex::new(Scrollback::new(&dir, 1024)));
         let (tx, _rx) = broadcast::channel::<BroadcastMessage>(1024);
@@ -250,11 +249,7 @@ mod tests {
 
         // Simulate the reader task: persist chunks, then broadcast them with
         // the same monotonic sequence numbers.
-        let chunks = vec![
-            b"first".to_vec(),
-            b"second".to_vec(),
-            b"third".to_vec(),
-        ];
+        let chunks = vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()];
         let mut seq = 0u64;
         for chunk in &chunks {
             seq += 1;

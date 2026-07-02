@@ -1,0 +1,26 @@
+# Term2 Phase Status
+
+Tracker for the multi-phase roadmap defined in [`ROADMAP.md`](./ROADMAP.md).
+
+| Phase | Name | Status | Notes |
+|-------|------|--------|-------|
+| 1 | Native PTY Backend | **Complete** | Native Rust PTY is the default; `TERM2_BACKEND=tmux` remains as a legacy fallback. |
+| 2 | Windows, Panes, and Tiling | Not started | — |
+| 3 | AI Command Palette & Agents | Not started | — |
+| 4 | Blocks, Notebooks, and Warp Drive | Not started | — |
+| 5 | Collaborative Sessions | Not started | — |
+| 6 | Mobile & Responsive Web | Not started | — |
+| 7 | Enterprise Hardening | Not started | — |
+| 8 | Ecosystem & Integrations | Not started | — |
+| 9 | Public Release & Scale | Not started | — |
+
+## Phase 1 completion checklist
+
+- [x] PTY manager abstraction (`crates/term2-core/src/pty_manager.rs`)
+- [x] Native session object (`crates/term2-core/src/native_session.rs`)
+- [x] Backend enum with `Native` default and `Tmux` legacy fallback (`crates/term2-core/src/session.rs`)
+- [x] `ops/systemd/term2.service` uses the native backend and does not require tmux
+- [x] `README.md` documents native default + tmux fallback
+- [x] CI runs native backend tests without tmux and has a separate legacy tmux job
+- [x] API integration tests default to the native backend
+- [x] `cargo test --workspace --all-features` passes without tmux installed

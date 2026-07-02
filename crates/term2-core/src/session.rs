@@ -704,6 +704,10 @@ mod tests {
         dir.join(format!("test-{n}.sock"))
     }
 
+    fn tmux_available() -> bool {
+        which::which("tmux").is_ok()
+    }
+
     async fn cleanup_tmux_socket(socket: &PathBuf) {
         let _ = tokio::process::Command::new("tmux")
             .arg("-S")
@@ -750,6 +754,9 @@ mod tests {
 
     #[tokio::test]
     async fn bash_session_can_be_created_and_listed() {
+        if !tmux_available() {
+            return;
+        }
         let socket = temp_socket();
         cleanup_tmux_socket(&socket).await;
         let manager = tmux_manager(temp_store(), socket);
@@ -776,6 +783,9 @@ mod tests {
 
     #[tokio::test]
     async fn sessions_survive_manager_restart() {
+        if !tmux_available() {
+            return;
+        }
         let socket = temp_socket();
         cleanup_tmux_socket(&socket).await;
         let store = temp_store();
@@ -811,6 +821,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_returns_empty_when_no_tmux_server() {
+        if !tmux_available() {
+            return;
+        }
         let socket = temp_socket();
         cleanup_tmux_socket(&socket).await;
         let manager = tmux_manager(temp_store(), socket);
@@ -820,6 +833,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_only_returns_sessions_for_requested_user() {
+        if !tmux_available() {
+            return;
+        }
         let socket = temp_socket();
         cleanup_tmux_socket(&socket).await;
         let store = temp_store();
@@ -845,6 +861,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_includes_unmanaged_tmux_sessions() {
+        if !tmux_available() {
+            return;
+        }
         let socket = temp_socket();
         cleanup_tmux_socket(&socket).await;
         let store = temp_store();
@@ -886,6 +905,9 @@ mod tests {
 
     #[tokio::test]
     async fn attach_to_session_receives_output() {
+        if !tmux_available() {
+            return;
+        }
         let socket = temp_socket();
         cleanup_tmux_socket(&socket).await;
         let manager = tmux_manager(temp_store(), socket);
@@ -925,6 +947,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_rejects_duplicate_name_for_same_user() {
+        if !tmux_available() {
+            return;
+        }
         let socket = temp_socket();
         cleanup_tmux_socket(&socket).await;
         let manager = tmux_manager(temp_store(), socket);
@@ -959,6 +984,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_rejects_invalid_name() {
+        if !tmux_available() {
+            return;
+        }
         let socket = temp_socket();
         cleanup_tmux_socket(&socket).await;
         let manager = tmux_manager(temp_store(), socket);
@@ -977,6 +1005,9 @@ mod tests {
 
     #[tokio::test]
     async fn terminate_unknown_session_returns_not_found() {
+        if !tmux_available() {
+            return;
+        }
         let socket = temp_socket();
         cleanup_tmux_socket(&socket).await;
         let manager = tmux_manager(temp_store(), socket);
@@ -986,6 +1017,9 @@ mod tests {
 
     #[tokio::test]
     async fn session_metadata_includes_profile_name() {
+        if !tmux_available() {
+            return;
+        }
         let socket = temp_socket();
         cleanup_tmux_socket(&socket).await;
         let manager = tmux_manager(temp_store(), socket);
@@ -1006,6 +1040,9 @@ mod tests {
 
     #[tokio::test]
     async fn list_populates_unmanaged_sessions() {
+        if !tmux_available() {
+            return;
+        }
         let socket = temp_socket();
         cleanup_tmux_socket(&socket).await;
         let manager = tmux_manager(temp_store(), socket.clone());
@@ -1028,6 +1065,9 @@ mod tests {
 
     #[tokio::test]
     async fn sanitized_name_in_session_id() {
+        if !tmux_available() {
+            return;
+        }
         let socket = temp_socket();
         cleanup_tmux_socket(&socket).await;
         let manager = tmux_manager(temp_store(), socket);
@@ -1322,7 +1362,12 @@ mod tests {
         let profile = registry.get("bash").unwrap();
 
         let info = manager
-            .create("native-scrollback-user", "scrollback-test", &profile, &registry)
+            .create(
+                "native-scrollback-user",
+                "scrollback-test",
+                &profile,
+                &registry,
+            )
             .await
             .expect("create session");
 

@@ -162,7 +162,7 @@ impl ProfileRegistry {
             Shell::Nushell => {
                 let config = dir.join("config.nu");
                 let env_config = dir.join("env.nu");
-                let mut args = vec!["nu".to_string()];
+                let mut args = vec!["nu".to_string(), "-i".to_string()];
                 if config.exists() {
                     args.push("--config".to_string());
                     args.push(config.to_string_lossy().to_string());

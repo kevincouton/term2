@@ -69,9 +69,10 @@ impl PtyHandle {
 
     /// Kill the child process.
     pub fn kill(&self) -> Result<()> {
-        let mut child = self.child.lock().map_err(|e| {
-            Error::Backend(format!("pty child mutex poisoned while killing: {e}"))
-        })?;
+        let mut child = self
+            .child
+            .lock()
+            .map_err(|e| Error::Backend(format!("pty child mutex poisoned while killing: {e}")))?;
         child
             .kill()
             .map_err(|e| Error::Backend(format!("kill failed: {e}")))

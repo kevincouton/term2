@@ -17,9 +17,7 @@ use tracing::{debug, error};
 
 use crate::profile::{LaunchArgs, Profile, ProfileRegistry};
 use crate::pty_manager::{PtyHandle, PtyManager};
-use crate::scrollback::{
-    max_bytes_from_env, BroadcastMessage, ReplaySender, Scrollback,
-};
+use crate::scrollback::{max_bytes_from_env, BroadcastMessage, ReplaySender, Scrollback};
 use crate::{Result, Session, SessionInfo};
 
 /// A shell session backed directly by a native PTY.
@@ -114,8 +112,8 @@ impl NativeSession {
                 .map_err(|e| crate::Error::Backend(format!("dup pty master failed: {e}")))?;
             let flags = nix::fcntl::fcntl(dup, nix::fcntl::F_GETFL)
                 .map_err(|e| crate::Error::Backend(format!("fcntl F_GETFL failed: {e}")))?;
-            let flags = nix::fcntl::OFlag::from_bits_truncate(flags)
-                | nix::fcntl::OFlag::O_NONBLOCK;
+            let flags =
+                nix::fcntl::OFlag::from_bits_truncate(flags) | nix::fcntl::OFlag::O_NONBLOCK;
             nix::fcntl::fcntl(dup, nix::fcntl::F_SETFL(flags))
                 .map_err(|e| crate::Error::Backend(format!("fcntl F_SETFL failed: {e}")))?;
             // Safety: `dup` is a freshly duplicated file descriptor that is not
@@ -233,20 +231,12 @@ impl NativeSession {
 
     /// Close the input channel so the writer task exits.
     fn close_input(&self) {
-        let _ = self
-            .input
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
+        let _ = self.input.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
     /// Drop the reader to close its fd and unblock the reader task.
     fn drop_reader(&self) {
-        let _ = self
-            .reader
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
+        let _ = self.reader.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
     /// Abort the reader and writer tasks. Safe to call even if they have
@@ -296,10 +286,7 @@ impl NativeSession {
 
     /// Return the OS process id, if known.
     pub fn process_id(&self) -> Option<u32> {
-        self.pty
-            .try_lock()
-            .ok()
-            .and_then(|pty| pty.process_id())
+        self.pty.try_lock().ok().and_then(|pty| pty.process_id())
     }
 
     /// Return true if the child process has not yet exited.
@@ -493,7 +480,10 @@ mod tests {
         drop(handle);
 
         let log_path = scrollback_dir.join("scrollback.log");
-        assert!(log_path.exists(), "scrollback log should exist while session is alive");
+        assert!(
+            log_path.exists(),
+            "scrollback log should exist while session is alive"
+        );
 
         session.kill().await.expect("kill");
         assert!(
