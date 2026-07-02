@@ -635,7 +635,7 @@ impl SessionManager {
 
     pub async fn create_window(
         &self,
-        user: &str,
+        _user: &str,
         session_id: &str,
         profile: &crate::Profile,
         registry: &crate::ProfileRegistry,
