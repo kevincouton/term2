@@ -479,6 +479,30 @@ impl SessionManager {
             .ok_or_else(|| Error::SessionNotFound(id.to_string()))
     }
 
+    /// Attach a WebSocket client to a specific pane in an existing session.
+    /// This does not change the session's global active pane.
+    pub async fn attach_pane(
+        &self,
+        _user: &str,
+        session_id: &str,
+        pane_id: &str,
+    ) -> Result<Session> {
+        match self.backend {
+            Backend::Native => {
+                let windows = self.windows.read().await;
+                let window = windows
+                    .get(session_id)
+                    .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+                window
+                    .attach_pane(pane_id)
+                    .ok_or_else(|| Error::SessionNotFound(pane_id.to_string()))
+            }
+            Backend::Tmux => Err(Error::BackendNotSupported(
+                "pane-specific attach requires native backend".to_string(),
+            )),
+        }
+    }
+
     /// Kill a session.
     pub async fn terminate(&self, _user: &str, id: &str) -> Result<()> {
         match self.backend {

@@ -233,3 +233,146 @@ async fn close_last_pane_terminates_session() {
         "closing the last pane should terminate the session"
     );
 }
+
+#[tokio::test]
+async fn two_pane_websockets_receive_independent_output() {
+    if backend_is_tmux() {
+        return;
+    }
+    let (addr, client) = spawn_test_server().await;
+    let (session_id, initial_pane_id) = create_bash_session(&addr, &client).await;
+
+    let split_resp = client
+        .post(format!("http://{addr}/api/v1/sessions/{session_id}/panes"))
+        .json(&serde_json::json!({ "direction": "right" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(split_resp.status().is_success());
+    let new_pane: term2_core::PaneInfo = split_resp.json().await.unwrap();
+
+    // The split makes the new pane active; pane-specific attachments should not
+    // alter this global state.
+    let list_resp = client
+        .get(format!("http://{addr}/api/v1/sessions"))
+        .send()
+        .await
+        .unwrap();
+    assert!(list_resp.status().is_success());
+    let sessions: Vec<serde_json::Value> = list_resp.json().await.unwrap();
+    let session = sessions
+        .iter()
+        .find(|s| s["id"].as_str() == Some(&session_id))
+        .expect("session still listed");
+    assert_eq!(
+        session["active_pane_id"].as_str(),
+        Some(new_pane.id.as_str()),
+        "split should make the new pane active"
+    );
+
+    // Connect each pane-specific WebSocket to a different pane.
+    let ws_url_pane1 =
+        format!("ws://{addr}/api/v1/sessions/{session_id}/panes/{initial_pane_id}/ws");
+    let ws_url_pane2 = format!(
+        "ws://{addr}/api/v1/sessions/{session_id}/panes/{}/ws",
+        new_pane.id
+    );
+
+    let (mut ws1, _) = tokio_tungstenite::connect_async(ws_url_pane1)
+        .await
+        .unwrap();
+    let (mut ws2, _) = tokio_tungstenite::connect_async(ws_url_pane2)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    let marker1 = format!("pane1-{}-ok", uuid::Uuid::new_v4());
+    let marker2 = format!("pane2-{}-ok", uuid::Uuid::new_v4());
+
+    ws1.send(Message::Text(format!("echo {marker1}\n").into()))
+        .await
+        .unwrap();
+    ws2.send(Message::Text(format!("echo {marker2}\n").into()))
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+
+    let ws1_marker = marker1.clone();
+    let ws1_task = tokio::spawn(async move {
+        let mut buffer = Vec::new();
+        while let Ok(Some(Ok(msg))) = tokio::time::timeout_at(deadline, ws1.next()).await {
+            if let Message::Binary(data) = msg {
+                buffer.extend_from_slice(&data);
+                let text = String::from_utf8_lossy(&buffer);
+                if text.contains(&ws1_marker) {
+                    return buffer;
+                }
+            }
+        }
+        buffer
+    });
+
+    let ws2_marker = marker2.clone();
+    let ws2_task = tokio::spawn(async move {
+        let mut buffer = Vec::new();
+        while let Ok(Some(Ok(msg))) = tokio::time::timeout_at(deadline, ws2.next()).await {
+            if let Message::Binary(data) = msg {
+                buffer.extend_from_slice(&data);
+                let text = String::from_utf8_lossy(&buffer);
+                if text.contains(&ws2_marker) {
+                    return buffer;
+                }
+            }
+        }
+        buffer
+    });
+
+    let (out1, out2) = tokio::join!(ws1_task, ws2_task);
+    let out1 = out1.unwrap();
+    let out2 = out2.unwrap();
+
+    let text1 = String::from_utf8_lossy(&out1);
+    let text2 = String::from_utf8_lossy(&out2);
+
+    assert!(
+        text1.contains(&marker1),
+        "pane 1 websocket should receive its own marker; got: {text1}"
+    );
+    assert!(
+        !text1.contains(&marker2),
+        "pane 1 websocket should not receive pane 2 marker; got: {text1}"
+    );
+    assert!(
+        text2.contains(&marker2),
+        "pane 2 websocket should receive its own marker; got: {text2}"
+    );
+    assert!(
+        !text2.contains(&marker1),
+        "pane 2 websocket should not receive pane 1 marker; got: {text2}"
+    );
+
+    // The pane-specific attachments must not change the session's global active pane.
+    let list_resp = client
+        .get(format!("http://{addr}/api/v1/sessions"))
+        .send()
+        .await
+        .unwrap();
+    assert!(list_resp.status().is_success());
+    let sessions: Vec<serde_json::Value> = list_resp.json().await.unwrap();
+    let session = sessions
+        .iter()
+        .find(|s| s["id"].as_str() == Some(&session_id))
+        .expect("session still listed");
+    assert_eq!(
+        session["active_pane_id"].as_str(),
+        Some(new_pane.id.as_str()),
+        "pane-specific websocket attachments should not change global active pane"
+    );
+
+    client
+        .delete(format!("http://{addr}/api/v1/sessions/{session_id}"))
+        .send()
+        .await
+        .unwrap();
+}

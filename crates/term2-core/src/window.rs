@@ -151,6 +151,10 @@ impl Window {
         self.active_pane().and_then(|p| p.attach())
     }
 
+    pub fn attach_pane(&self, pane_id: &str) -> Option<Session> {
+        self.panes.get(pane_id).and_then(|p| p.attach())
+    }
+
     pub async fn kill_all_panes(mut self) -> Result<()> {
         for (_, pane) in self.panes.drain() {
             pane.kill().await?;

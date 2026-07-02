@@ -98,23 +98,18 @@ async fn handle_pane_socket(
     session_id: String,
     pane_id: String,
 ) {
-    // First focus the requested pane, then attach to it.
-    //
-    // NOTE: `focus_pane` mutates the session's global active pane, which is
-    // shared across all clients attached to this session. A pane-specific
-    // WebSocket therefore changes which pane every client sees as focused.
-    // This is acceptable for the current single-window-per-session slice, but
-    // a future multi-window or per-client-focus design will need a separate
-    // focus model for WebSocket attachments.
-    if let Err(e) = state
+    let session = match state
         .sessions
-        .focus_pane(&user.id, &session_id, &pane_id)
+        .attach_pane(&user.id, &session_id, &pane_id)
         .await
     {
-        tracing::warn!("ws_pane focus failed for {session_id}/{pane_id}: {e}");
-        return;
-    }
-    handle_socket(socket, state, user, session_id).await
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("ws_pane attach failed for {session_id}/{pane_id}: {e}");
+            return;
+        }
+    };
+    run_socket(socket, session, session_id).await;
 }
 
 async fn handle_socket(
@@ -130,7 +125,14 @@ async fn handle_socket(
             return;
         }
     };
+    run_socket(socket, session, id).await;
+}
 
+async fn run_socket(
+    socket: axum::extract::ws::WebSocket,
+    session: term2_core::Session,
+    id: String,
+) {
     let mut output = session.output.subscribe();
     let input = session.input;
 
