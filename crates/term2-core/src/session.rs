@@ -315,6 +315,14 @@ impl SessionManager {
                 known.remove(id);
             }
             let _ = save_store(&self.store, &known);
+
+            // Also drop the in-memory NativeSession so its tasks and PTY fd are
+            // cleaned up; otherwise a child that exits on its own leaks until
+            // the manager is dropped.
+            let mut native_sessions = self.native_sessions.write().await;
+            for id in &pruned {
+                native_sessions.remove(id);
+            }
         }
 
         Ok(infos)

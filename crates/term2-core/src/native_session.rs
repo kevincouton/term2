@@ -169,7 +169,7 @@ impl NativeSession {
         let input = self
             .input
             .lock()
-            .expect("native session input lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone()
             .expect("native session is shutting down");
         Session {
@@ -184,13 +184,17 @@ impl NativeSession {
         let _ = self
             .input
             .lock()
-            .expect("native session input lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .take();
     }
 
     /// Drop the reader to close its fd and unblock the reader task.
     fn drop_reader(&self) {
-        let _ = self.reader.lock().unwrap().take();
+        let _ = self
+            .reader
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
     }
 
     /// Abort the reader and writer tasks. Safe to call even if they have
