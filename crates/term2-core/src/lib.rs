@@ -11,6 +11,7 @@ pub mod native_session;
 pub mod notification;
 pub mod profile;
 pub mod pty_manager;
+pub mod scrollback;
 pub mod session;
 pub mod theme;
 pub mod warp_drive;
@@ -26,6 +27,7 @@ pub use native_session::NativeSession;
 pub use notification::{Notification, NotificationMailbox, NotificationType, TabStatus};
 pub use profile::{Profile, ProfileRegistry, Shell};
 pub use pty_manager::{PtyHandle, PtyManager};
+pub use scrollback::{ReplayReceiver, ReplaySender, Scrollback, DEFAULT_MAX_SCROLLBACK_BYTES};
 pub use session::{Backend, Error, Result, Session, SessionInfo, SessionManager};
 pub use theme::{AppearanceConfig, Color, CursorStyle, InputPosition, Theme};
 pub use warp_drive::{

@@ -8,6 +8,7 @@
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::fd::FromRawFd;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +17,7 @@ use tracing::{debug, error};
 
 use crate::profile::{LaunchArgs, Profile, ProfileRegistry};
 use crate::pty_manager::{PtyHandle, PtyManager};
+use crate::scrollback::{ReplaySender, Scrollback, DEFAULT_MAX_SCROLLBACK_BYTES};
 use crate::{Result, Session, SessionInfo};
 
 /// A shell session backed directly by a native PTY.
@@ -26,7 +28,7 @@ pub struct NativeSession {
     /// dropped during shutdown to close the channel and unblock the writer
     /// task, even through an `&self` API.
     input: Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>,
-    pub output: broadcast::Sender<Vec<u8>>,
+    pub output: ReplaySender,
     pty: Arc<tokio::sync::Mutex<PtyHandle>>,
     /// Reader handle kept in a mutex so shutdown can drop it and close the
     /// underlying fd.
@@ -34,20 +36,32 @@ pub struct NativeSession {
     shutdown: Arc<AtomicBool>,
     reader_handle: tokio::task::JoinHandle<()>,
     writer_handle: tokio::task::JoinHandle<()>,
+    scrollback: Arc<Mutex<Scrollback>>,
 }
 
 impl NativeSession {
     /// Spawn a new native session from a profile.
+    ///
+    /// `scrollback_dir` defaults to `~/.config/term2/sessions/<id>/` when not
+    /// provided.
     pub fn from_profile(
         id: impl Into<String>,
         _user: &str,
         name: &str,
         profile: &Profile,
         registry: &ProfileRegistry,
+        scrollback_dir: impl Into<Option<PathBuf>>,
     ) -> Result<Self> {
         let id = id.into();
         registry.ensure(profile)?;
         let args = registry.launch_args(profile);
+        let scrollback_dir = scrollback_dir.into().unwrap_or_else(|| {
+            dirs::config_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("term2")
+                .join("sessions")
+                .join(&id)
+        });
         let info = SessionInfo {
             id: id.clone(),
             name: name.to_string(),
@@ -55,16 +69,34 @@ impl NativeSession {
             created_at: now_secs(),
             attached: false,
         };
-        Self::spawn(id, info, &args)
+        Self::spawn(id, info, &args, scrollback_dir)
     }
 
     /// Spawn a native session from raw launch arguments.
-    pub fn spawn(id: String, info: SessionInfo, args: &LaunchArgs) -> Result<Self> {
+    pub fn spawn(
+        id: String,
+        info: SessionInfo,
+        args: &LaunchArgs,
+        scrollback_dir: impl Into<Option<PathBuf>>,
+    ) -> Result<Self> {
         let pty = PtyManager::new().spawn(args)?;
+
+        let scrollback_dir = scrollback_dir.into().unwrap_or_else(|| {
+            dirs::config_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("term2")
+                .join("sessions")
+                .join(&id)
+        });
+        let scrollback = Arc::new(Mutex::new(Scrollback::new(
+            &scrollback_dir,
+            DEFAULT_MAX_SCROLLBACK_BYTES,
+        )));
 
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (output_tx, _output_rx) = broadcast::channel::<Vec<u8>>(1024);
         let output_tx_reader = output_tx.clone();
+        let scrollback_for_task = scrollback.clone();
 
         // On Unix we duplicate the PTY master fd ourselves and set it
         // non-blocking. This lets the reader task poll for data and react to
@@ -96,7 +128,7 @@ impl NativeSession {
         let reader = Arc::new(Mutex::new(Some(reader)));
         let shutdown = Arc::new(AtomicBool::new(false));
 
-        // Reader task: PTY -> broadcast output.
+        // Reader task: PTY -> broadcast output + scrollback file.
         let reader_id = id.clone();
         let reader_for_task = reader.clone();
         let shutdown_for_task = shutdown.clone();
@@ -113,13 +145,20 @@ impl NativeSession {
                 match r.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        let chunk = &buf[..n];
+                        // Persist the chunk before broadcasting so subscribers
+                        // that observe the output can also rely on it being on
+                        // disk for later replay.
+                        if let Ok(mut s) = scrollback_for_task.lock() {
+                            let _ = s.append(chunk);
+                        }
                         // Release the lock before broadcasting so shutdown can
                         // take the reader while we send.
                         drop(guard);
                         // Ignore send errors: there may be no active receivers
                         // between detach and re-attach, and the broadcast sender
                         // must stay alive for future attach calls.
-                        let _ = output_tx_reader.send(buf[..n].to_vec());
+                        let _ = output_tx_reader.send(chunk.to_vec());
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         // No data available yet; release the reader and sleep
@@ -155,12 +194,13 @@ impl NativeSession {
             id,
             info,
             input: Mutex::new(Some(input_tx)),
-            output: output_tx,
+            output: ReplaySender::new(output_tx, Some(scrollback.clone())),
             pty,
             reader,
             shutdown,
             reader_handle,
             writer_handle,
+            scrollback,
         })
     }
 
@@ -204,6 +244,13 @@ impl NativeSession {
         self.writer_handle.abort();
     }
 
+    /// Remove the persisted scrollback log.
+    fn remove_scrollback(&self) {
+        if let Ok(mut s) = self.scrollback.lock() {
+            let _ = s.remove();
+        }
+    }
+
     /// Shut the session down. On Unix this signals the reader task and drops
     /// the reader fd so the task exits cleanly while leaving the child process
     /// alive, which lets native sessions survive a manager restart. On
@@ -222,6 +269,7 @@ impl NativeSession {
             }
         }
         self.abort_tasks();
+        self.remove_scrollback();
     }
 
     /// Kill the shell process.
@@ -229,9 +277,8 @@ impl NativeSession {
         self.close_input();
         let pty = self.pty.lock().await;
         let result = pty.kill();
-        self.shutdown.store(true, Ordering::Relaxed);
-        self.drop_reader();
-        self.abort_tasks();
+        drop(pty);
+        self.shutdown();
         result
     }
 
@@ -265,18 +312,31 @@ fn now_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
+
+    static SCROLLBACK_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_scrollback_dir(prefix: &str) -> PathBuf {
+        let n = SCROLLBACK_COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir()
+            .join(format!("term2-native-scroll-{}-{n}", std::process::id()))
+            .join(prefix)
+    }
 
     #[tokio::test]
     async fn native_session_spawns_bash_and_exchanges_io() {
         let registry = ProfileRegistry::new(&format!("native-bash-{}", std::process::id()));
         let profile = registry.get("bash").unwrap();
+        let scrollback_dir = temp_scrollback_dir("bash-io");
         let session = NativeSession::from_profile(
             "native-bash-test",
             "test-user",
             "bash-test",
             &profile,
             &registry,
+            scrollback_dir.clone(),
         )
         .expect("spawn native bash session");
 
@@ -310,12 +370,14 @@ mod tests {
     async fn native_session_kill_makes_it_dead() {
         let registry = ProfileRegistry::new(&format!("native-kill-{}", std::process::id()));
         let profile = registry.get("bash").unwrap();
+        let scrollback_dir = temp_scrollback_dir("kill");
         let session = NativeSession::from_profile(
             "native-kill-test",
             "test-user",
             "kill-test",
             &profile,
             &registry,
+            scrollback_dir.clone(),
         )
         .expect("spawn");
 
@@ -323,5 +385,108 @@ mod tests {
         session.kill().await.expect("kill");
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert!(!session.is_alive().await);
+    }
+
+    #[tokio::test]
+    async fn native_session_scrollback_replays_on_reattach() {
+        let registry = ProfileRegistry::new(&format!("native-reattach-{}", std::process::id()));
+        let profile = registry.get("bash").unwrap();
+        let scrollback_dir = temp_scrollback_dir("reattach");
+        let session = NativeSession::from_profile(
+            "native-reattach-test",
+            "test-user",
+            "reattach-test",
+            &profile,
+            &registry,
+            scrollback_dir.clone(),
+        )
+        .expect("spawn");
+
+        // Generate some output on the first attachment.
+        let first = session.attach();
+        first
+            .input
+            .send(b"echo term2-first-marker\n".to_vec())
+            .expect("send input");
+
+        let mut output = first.output.subscribe();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut buffer = Vec::new();
+        loop {
+            let chunk = tokio::time::timeout_at(deadline, output.recv())
+                .await
+                .expect("timed out")
+                .expect("output closed");
+            buffer.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&buffer).contains("term2-first-marker") {
+                break;
+            }
+        }
+        drop(first);
+
+        // A later attachment should replay the scrollback before live output.
+        let second = session.attach();
+        let mut output = second.output.subscribe();
+        let mut replay_buffer = Vec::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let chunk = tokio::time::timeout_at(deadline, output.recv())
+                .await
+                .expect("timed out")
+                .expect("output closed");
+            replay_buffer.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&replay_buffer).contains("term2-first-marker") {
+                break;
+            }
+        }
+
+        session.kill().await.expect("kill");
+    }
+
+    #[tokio::test]
+    async fn native_session_kill_removes_scrollback_file() {
+        let registry = ProfileRegistry::new(&format!("native-cleanup-{}", std::process::id()));
+        let profile = registry.get("bash").unwrap();
+        let scrollback_dir = temp_scrollback_dir("cleanup");
+        let session = NativeSession::from_profile(
+            "native-cleanup-test",
+            "test-user",
+            "cleanup-test",
+            &profile,
+            &registry,
+            scrollback_dir.clone(),
+        )
+        .expect("spawn");
+
+        // Generate a little output so the scrollback file is created.
+        let handle = session.attach();
+        handle
+            .input
+            .send(b"echo term2-cleanup-marker\n".to_vec())
+            .expect("send input");
+
+        let mut output = handle.output.subscribe();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut buffer = Vec::new();
+        loop {
+            let chunk = tokio::time::timeout_at(deadline, output.recv())
+                .await
+                .expect("timed out")
+                .expect("output closed");
+            buffer.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&buffer).contains("term2-cleanup-marker") {
+                break;
+            }
+        }
+        drop(handle);
+
+        let log_path = scrollback_dir.join("scrollback.log");
+        assert!(log_path.exists(), "scrollback log should exist while session is alive");
+
+        session.kill().await.expect("kill");
+        assert!(
+            !log_path.exists(),
+            "scrollback log should be removed when the session is killed"
+        );
     }
 }

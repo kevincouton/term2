@@ -8,6 +8,7 @@ use tracing::{debug, error};
 
 use crate::native_session::NativeSession;
 use crate::profile::{Profile, ProfileRegistry};
+use crate::scrollback::ReplaySender;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -33,7 +34,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Session {
     pub id: String,
     pub input: mpsc::UnboundedSender<Vec<u8>>,
-    pub output: broadcast::Sender<Vec<u8>>,
+    pub output: ReplaySender,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -79,6 +80,7 @@ pub struct SessionManager {
     // reject duplicate friendly names for the same user.
     known: Arc<RwLock<HashMap<String, SessionMetadata>>>,
     store: PathBuf,
+    scrollback_root: PathBuf,
     tmux_socket: Option<PathBuf>,
     backend: Backend,
     // Active native sessions, keyed by session id.
@@ -108,9 +110,14 @@ impl SessionManager {
 
     pub fn new_with_store(store: PathBuf) -> Self {
         let known = load_store(&store).unwrap_or_default();
+        let scrollback_root = store
+            .parent()
+            .map(|p| p.join("sessions"))
+            .unwrap_or_else(|| PathBuf::from("sessions"));
         Self {
             known: Arc::new(RwLock::new(known)),
             store,
+            scrollback_root,
             tmux_socket: None,
             backend: Backend::from_env_or_default(),
             native_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -180,7 +187,9 @@ impl SessionManager {
             }
         }
 
-        let native = NativeSession::from_profile(&id, user, &name, profile, registry)?;
+        let scrollback_dir = self.scrollback_root.join(&id);
+        let native =
+            NativeSession::from_profile(&id, user, &name, profile, registry, scrollback_dir)?;
         let pid = native.process_id();
         let info = native.info.clone();
 
@@ -583,7 +592,7 @@ impl SessionManager {
         Ok(Session {
             id: tmux_name.to_string(),
             input: input_tx,
-            output: output_tx,
+            output: ReplaySender::new(output_tx, None),
         })
     }
 }
@@ -1298,5 +1307,128 @@ mod tests {
             .terminate("native-reattach-user", &info.id)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_reattach_replays_scrollback() {
+        let store = temp_store();
+        let manager = native_manager(store.clone());
+        let registry = ProfileRegistry::new("native-scrollback-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("native-scrollback-user", "scrollback-test", &profile, &registry)
+            .await
+            .expect("create session");
+
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let first = manager
+            .attach("native-scrollback-user", &info.id)
+            .await
+            .expect("first attach");
+
+        first
+            .input
+            .send(b"echo term2-scrollback-marker\n".to_vec())
+            .expect("send input");
+
+        let mut output = first.output.subscribe();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut buffer = Vec::new();
+        loop {
+            let chunk = tokio::time::timeout_at(deadline, output.recv())
+                .await
+                .expect("timed out")
+                .expect("output closed");
+            buffer.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&buffer).contains("term2-scrollback-marker") {
+                break;
+            }
+        }
+        drop(first);
+
+        // Re-attach and verify the marker is replayed from scrollback.
+        let second = manager
+            .attach("native-scrollback-user", &info.id)
+            .await
+            .expect("second attach");
+        let mut output = second.output.subscribe();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut replay = Vec::new();
+        loop {
+            let chunk = tokio::time::timeout_at(deadline, output.recv())
+                .await
+                .expect("timed out")
+                .expect("output closed");
+            replay.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&replay).contains("term2-scrollback-marker") {
+                break;
+            }
+        }
+
+        manager
+            .terminate("native-scrollback-user", &info.id)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_terminate_removes_scrollback_file() {
+        let store = temp_store();
+        let manager = native_manager(store.clone());
+        let registry = ProfileRegistry::new("native-cleanup-user");
+        let profile = registry.get("bash").unwrap();
+
+        let info = manager
+            .create("native-cleanup-user", "cleanup-test", &profile, &registry)
+            .await
+            .expect("create session");
+
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let session = manager
+            .attach("native-cleanup-user", &info.id)
+            .await
+            .expect("attach");
+        session
+            .input
+            .send(b"echo term2-cleanup\n".to_vec())
+            .expect("send input");
+
+        let mut output = session.output.subscribe();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut buffer = Vec::new();
+        loop {
+            let chunk = tokio::time::timeout_at(deadline, output.recv())
+                .await
+                .expect("timed out")
+                .expect("output closed");
+            buffer.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&buffer).contains("term2-cleanup") {
+                break;
+            }
+        }
+
+        let scrollback_path = store
+            .parent()
+            .unwrap()
+            .join("sessions")
+            .join(&info.id)
+            .join("scrollback.log");
+        assert!(
+            scrollback_path.exists(),
+            "scrollback log should exist while session is alive"
+        );
+
+        manager
+            .terminate("native-cleanup-user", &info.id)
+            .await
+            .unwrap();
+
+        assert!(
+            !scrollback_path.exists(),
+            "scrollback log should be removed when session is terminated"
+        );
     }
 }
