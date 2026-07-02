@@ -39,7 +39,7 @@ These scenarios supplement the 2,751 Warp-derived scenarios in the neighbouring 
 ### Scenario: List sessions isolates users
 - **Given** users `alice` and `bob` each have active sessions.
 - **When** either user lists sessions via `GET /api/v1/sessions`.
-- **Then** they see only their own `term2-<user>-<name>` sessions; other users' Term2 sessions are hidden. Unmanaged tmux sessions are still visible to everyone when the native backend lists sessions.
+- **Then** they see only their own `term2-<user>-<name>` sessions; other users' Term2 sessions are hidden. Unmanaged tmux sessions are only visible when the legacy `TERM2_BACKEND=tmux` backend is active.
 - **Status:** `implemented`
 - **Coverage:** `crates/term2-core/src/session.rs`
 
@@ -411,7 +411,7 @@ These are documented as `out-of-scope` in the chunk files `warp-docs-chunk-03.md
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | ✅ passing | |
 | `cargo test --workspace --all-features` | ✅ passing | 152 passed, 22 ignored |
 | `TERM2_BACKEND=tmux cargo test --workspace --all-features` | ✅ passing | 152 passed, 22 ignored |
-| E2E Playwright tests | ✅ passing | 10 passed, 8 fixme |
+| E2E Playwright tests | ✅ passing | 11 non-fixme tests: native backend 9 passed, 2 skipped (nushell, legacy tmux tiling); tmux backend 11 passed. 8 fixme tests. |
 | Static asset serving | ✅ implemented | |
 | Auth header extraction | ✅ implemented | |
 | Session isolation per user | ✅ implemented | |

@@ -136,7 +136,7 @@ async fn handle_socket(
                 _ => continue,
             };
             if input.send(data).is_err() {
-                tracing::debug!("tmux input channel closed for session {recv_id}");
+                tracing::debug!("input channel closed for session {recv_id}");
                 break;
             }
         }
