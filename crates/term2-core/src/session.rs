@@ -452,7 +452,9 @@ impl SessionManager {
         let session = native_sessions
             .get(id)
             .ok_or_else(|| Error::SessionNotFound(id.to_string()))?;
-        Ok(session.attach())
+        session
+            .attach()
+            .ok_or_else(|| Error::SessionNotFound(id.to_string()))
     }
 
     /// Kill a session.
@@ -603,10 +605,7 @@ impl SessionManager {
 }
 
 fn store_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("term2")
-        .join("sessions.json")
+    crate::paths::term2_config_dir().join("sessions.json")
 }
 
 fn load_store(path: &PathBuf) -> std::io::Result<HashMap<String, SessionMetadata>> {
@@ -667,9 +666,10 @@ fn now_secs() -> u64 {
 /// Check whether a process with `pid` is still alive.
 #[cfg(unix)]
 fn process_exists(pid: u32) -> bool {
-    use nix::sys::signal::Signal;
-    use nix::unistd::Pid;
-    nix::sys::signal::kill(Pid::from_raw(pid as i32), Signal::SIGCONT).is_ok()
+    // Signal 0 performs a permission/liveness check without affecting the
+    // target process. `EPERM` means the process exists but we lack permission
+    // to signal it.
+    (unsafe { libc::kill(pid as i32, 0) == 0 })
         || nix::errno::Errno::last() == nix::errno::Errno::EPERM
 }
 

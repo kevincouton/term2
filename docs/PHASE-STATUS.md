@@ -4,7 +4,7 @@ Tracker for the multi-phase roadmap defined in [`ROADMAP.md`](./ROADMAP.md).
 
 | Phase | Name | Status | Notes |
 |-------|------|--------|-------|
-| 1 | Native PTY Backend | **Complete** | Native Rust PTY is the default; `TERM2_BACKEND=tmux` remains as a legacy fallback. |
+| 1 | Native PTY Backend | **Complete** | Native Rust PTY is the default; `TERM2_BACKEND=tmux` remains as a legacy fallback. Native restart survival means the session remains listed and its child process stays alive; full re-attach with scrollback replay across restarts requires Phase 1.5/2 work or the tmux fallback. |
 | 2 | Windows, Panes, and Tiling | Not started | — |
 | 3 | AI Command Palette & Agents | Not started | — |
 | 4 | Blocks, Notebooks, and Warp Drive | Not started | — |
@@ -24,3 +24,5 @@ Tracker for the multi-phase roadmap defined in [`ROADMAP.md`](./ROADMAP.md).
 - [x] CI runs native backend tests without tmux and has a separate legacy tmux job
 - [x] API integration tests default to the native backend
 - [x] `cargo test --workspace --all-features` passes without tmux installed
+- [x] `TERM2_CONFIG_DIR` overrides the default `~/.config/term2` configuration directory (`crates/term2-core/src/paths.rs`)
+- [x] Native session restart survival is documented as "listed + child stays alive"; full cross-restart re-attach with scrollback replay is out of Phase 1 scope

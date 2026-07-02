@@ -9,6 +9,7 @@ User=term2
 Group=term2
 WorkingDirectory=/var/lib/term2
 EnvironmentFile=/etc/term2/env
+Environment=TERM2_CONFIG_DIR=/var/lib/term2
 ExecStart=/usr/local/bin/term2-server
 Restart=on-failure
 RestartSec=5

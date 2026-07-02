@@ -44,9 +44,9 @@ These scenarios supplement the 2,751 Warp-derived scenarios in the neighbouring 
 - **Coverage:** `crates/term2-core/src/session.rs`
 
 ### Scenario: Sessions survive a server restart
-- **Given** a session was created through Term2 and persisted to `~/.config/term2/sessions.json`.
+- **Given** a session was created through Term2 and persisted to `$TERM2_CONFIG_DIR/sessions.json` (default `~/.config/term2/sessions.json`).
 - **When** the `term2-server` process is restarted and the user lists sessions.
-- **Then** the session is still listed with its original profile and creation time.
+- **Then** the session is still listed with its original profile and creation time. For the native backend the child process remains alive, but full re-attach with scrollback replay across the restart is not yet supported.
 - **Status:** `implemented`
 - **Coverage:** `crates/term2-core/src/session.rs`
 
@@ -60,10 +60,9 @@ These scenarios supplement the 2,751 Warp-derived scenarios in the neighbouring 
 ### Scenario: Killing an unknown session returns a clear error
 - **Given** no session with id `does-not-exist`.
 - **When** `DELETE /api/v1/sessions/does-not-exist` is called.
-- **Then** the API returns HTTP `500` (current behaviour) and the server logs a session-not-found error.
-- **Status:** `partial`
-- **Coverage:** `api/tests/warp_features.rs`
-- **Note:** Should return HTTP `404` instead of `500`; update `sessions::terminate` error mapping.
+- **Then** the API returns HTTP `404 Not Found` and the server logs a session-not-found error.
+- **Status:** `implemented`
+- **Coverage:** `api/tests/warp_features.rs`, `crates/term2-core/src/session.rs`
 
 ---
 
@@ -125,9 +124,10 @@ These scenarios supplement the 2,751 Warp-derived scenarios in the neighbouring 
 ### Scenario: Native session survives manager restart
 - **Given** a native session is running.
 - **When** the `SessionManager` is dropped and recreated with the same store path.
-- **Then** the session is listed again and can be reattached.
-- **Status:** `implemented`
+- **Then** the session is still listed (its child process remains alive) and can be terminated through the API. Full re-attach with scrollback replay across a server restart is not yet implemented for the native backend.
+- **Status:** `partial`
 - **Coverage:** `crates/term2-core/src/session.rs`
+- **Note:** Cross-restart re-attach requires Phase 1.5/2 work or the `TERM2_BACKEND=tmux` fallback.
 
 ### Scenario: Native session scrollback replays on reattach
 - **Given** a native session has emitted output while unattached.
@@ -420,7 +420,7 @@ These are documented as `out-of-scope` in the chunk files `warp-docs-chunk-03.md
 | Native PTY session lifecycle | ✅ implemented | default backend |
 | Legacy tmux session lifecycle | ✅ implemented | `TERM2_BACKEND=tmux` fallback |
 | Warp scenario index | ✅ updated | 2,751 scenarios across 11 chunks |
-| Return 404 for unknown session delete | ⚠️ planned | currently returns 500 |
+| Return 404 for unknown session delete | ✅ implemented | native and tmux backends return `SessionNotFound`, mapped to HTTP 404 |
 | Implement command palette | ⚠️ planned | fixme tests exist |
 | Implement blocks UI | ⚠️ planned | fixme tests exist |
 | Implement theme picker | ⚠️ planned | fixme tests exist |

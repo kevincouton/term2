@@ -9,6 +9,7 @@ pub mod keybinding;
 pub mod launch_config;
 pub mod native_session;
 pub mod notification;
+pub mod paths;
 pub mod profile;
 pub mod pty_manager;
 pub mod scrollback;

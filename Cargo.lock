@@ -1465,6 +1465,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "futures",
+ "libc",
  "nix 0.29.0",
  "portable-pty",
  "serde",

@@ -60,9 +60,7 @@ pub struct ProfileRegistry {
 
 impl ProfileRegistry {
     pub fn new(user: &str) -> Self {
-        let base_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("term2")
+        let base_dir = crate::paths::term2_config_dir()
             .join("profiles")
             .join(sanitize(user));
         Self { base_dir }

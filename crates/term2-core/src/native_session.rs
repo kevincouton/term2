@@ -55,13 +55,9 @@ impl NativeSession {
         let id = id.into();
         registry.ensure(profile)?;
         let args = registry.launch_args(profile);
-        let scrollback_dir = scrollback_dir.into().unwrap_or_else(|| {
-            dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("term2")
-                .join("sessions")
-                .join(&id)
-        });
+        let scrollback_dir = scrollback_dir
+            .into()
+            .unwrap_or_else(|| crate::paths::term2_config_dir().join("sessions").join(&id));
         let info = SessionInfo {
             id: id.clone(),
             name: name.to_string(),
@@ -81,13 +77,9 @@ impl NativeSession {
     ) -> Result<Self> {
         let pty = PtyManager::new().spawn(args)?;
 
-        let scrollback_dir = scrollback_dir.into().unwrap_or_else(|| {
-            dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("term2")
-                .join("sessions")
-                .join(&id)
-        });
+        let scrollback_dir = scrollback_dir
+            .into()
+            .unwrap_or_else(|| crate::paths::term2_config_dir().join("sessions").join(&id));
         let scrollback = Arc::new(Mutex::new(Scrollback::new(
             &scrollback_dir,
             max_bytes_from_env(),
@@ -215,18 +207,20 @@ impl NativeSession {
     }
 
     /// Return a new `Session` handle sharing the underlying PTY I/O.
-    pub fn attach(&self) -> Session {
+    ///
+    /// Returns `None` once the session has begun shutting down and the input
+    /// channel has been closed (for example after `kill()` has been called).
+    pub fn attach(&self) -> Option<Session> {
         let input = self
             .input
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .expect("native session is shutting down");
-        Session {
+            .clone()?;
+        Some(Session {
             id: self.id.clone(),
             input,
             output: self.output.clone(),
-        }
+        })
     }
 
     /// Close the input channel so the writer task exits.
@@ -342,7 +336,7 @@ mod tests {
         assert!(session.process_id().is_some());
         assert!(session.is_alive().await);
 
-        let handle = session.attach();
+        let handle = session.attach().expect("attach");
         handle
             .input
             .send(b"echo term2-native-ok\n".to_vec())
@@ -402,7 +396,7 @@ mod tests {
         .expect("spawn");
 
         // Generate some output on the first attachment.
-        let first = session.attach();
+        let first = session.attach().expect("attach");
         first
             .input
             .send(b"echo term2-first-marker\n".to_vec())
@@ -424,7 +418,7 @@ mod tests {
         drop(first);
 
         // A later attachment should replay the scrollback before live output.
-        let second = session.attach();
+        let second = session.attach().expect("attach");
         let mut output = second.output.subscribe();
         let mut replay_buffer = Vec::new();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -458,7 +452,7 @@ mod tests {
         .expect("spawn");
 
         // Generate a little output so the scrollback file is created.
-        let handle = session.attach();
+        let handle = session.attach().expect("attach");
         handle
             .input
             .send(b"echo term2-cleanup-marker\n".to_vec())
@@ -490,5 +484,25 @@ mod tests {
             !log_path.exists(),
             "scrollback log should be removed when the session is killed"
         );
+    }
+
+    #[tokio::test]
+    async fn native_session_attach_returns_none_after_kill() {
+        let registry = ProfileRegistry::new(&format!("native-attach-kill-{}", std::process::id()));
+        let profile = registry.get("bash").unwrap();
+        let scrollback_dir = temp_scrollback_dir("attach-kill");
+        let session = NativeSession::from_profile(
+            "native-attach-kill-test",
+            "test-user",
+            "attach-kill-test",
+            &profile,
+            &registry,
+            scrollback_dir.clone(),
+        )
+        .expect("spawn");
+
+        assert!(session.attach().is_some());
+        session.kill().await.expect("kill");
+        assert!(session.attach().is_none());
     }
 }
