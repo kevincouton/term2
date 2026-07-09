@@ -576,11 +576,7 @@ impl SessionManager {
             }
         }
 
-        {
-            let mut known = self.known.write().await;
-            known.remove(id);
-            let _ = save_store(&self.store, &known);
-        }
+        self.remove_known_session(id).await;
         Ok(())
     }
 
@@ -603,12 +599,15 @@ impl SessionManager {
             return Err(Error::Tmux(stderr.into_owned()));
         }
 
-        {
-            let mut known = self.known.write().await;
-            known.remove(id);
-            let _ = save_store(&self.store, &known);
-        }
+        self.remove_known_session(id).await;
         Ok(())
+    }
+
+    /// Remove a session from the persistent `known` map and write the store.
+    async fn remove_known_session(&self, id: &str) {
+        let mut known = self.known.write().await;
+        known.remove(id);
+        let _ = save_store(&self.store, &known);
     }
 
     pub async fn list_panes(&self, user: &str, session_id: &str) -> Result<Vec<crate::PaneInfo>> {
@@ -650,14 +649,12 @@ impl SessionManager {
             ));
         }
         let window_id = uuid::Uuid::new_v4().to_string();
-        let runtime_name = {
-            let sessions = self.sessions.write().await;
-            let runtime = sessions
-                .get(session_id)
-                .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
-            runtime.name.clone()
-        };
         let scrollback_dir = self.scrollback_root.join(session_id).join(&window_id);
+        let mut sessions = self.sessions.write().await;
+        let runtime = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+        let runtime_name = runtime.name.clone();
         let window = crate::Window::new(
             session_id,
             &window_id,
@@ -667,14 +664,8 @@ impl SessionManager {
             scrollback_dir,
         )?;
         let info = window.info(true);
-        {
-            let mut sessions = self.sessions.write().await;
-            let runtime = sessions
-                .get_mut(session_id)
-                .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
-            runtime.windows.push(window);
-            runtime.active_window_id = window_id;
-        }
+        runtime.windows.push(window);
+        runtime.active_window_id = window_id;
         Ok(info)
     }
 
@@ -704,14 +695,13 @@ impl SessionManager {
             (window, is_last)
         };
 
-        window.kill_all_panes().await?;
+        let kill_result = window.kill_all_panes().await;
 
         if is_last {
-            let mut known = self.known.write().await;
-            known.remove(session_id);
-            let _ = save_store(&self.store, &known);
+            self.remove_known_session(session_id).await;
         }
-        Ok(())
+
+        kill_result
     }
 
     pub async fn rename_window(
