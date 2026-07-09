@@ -612,12 +612,8 @@ impl SessionManager {
     }
 
     pub async fn list_panes(&self, user: &str, session_id: &str) -> Result<Vec<crate::PaneInfo>> {
-        self.pane_op_read(
-            user,
-            session_id,
-            |window, _registry| Ok(window.list_panes()),
-        )
-        .await
+        self.pane_op_read(user, session_id, |window, _| Ok(window.list_panes()))
+            .await
     }
 
     pub async fn list_windows(
@@ -781,7 +777,7 @@ impl SessionManager {
     pub async fn close_pane(&self, user: &str, session_id: &str, pane_id: &str) -> Result<()> {
         let pane_id = pane_id.to_string();
         let (pane, terminate_session) = self
-            .pane_op(user, session_id, move |window, _registry| {
+            .pane_op(user, session_id, move |window, _| {
                 window.close_pane(&pane_id)
             })
             .await?;
@@ -794,7 +790,7 @@ impl SessionManager {
 
     pub async fn focus_pane(&self, user: &str, session_id: &str, pane_id: &str) -> Result<()> {
         let pane_id = pane_id.to_string();
-        self.pane_op(user, session_id, move |window, _registry| {
+        self.pane_op(user, session_id, move |window, _| {
             window.focus_pane(&pane_id)
         })
         .await
