@@ -41,6 +41,22 @@ pub fn create(state: Arc<AppState>) -> Router {
             "/api/v1/sessions/{id}/panes/{pane_id}/focus",
             axum::routing::post(routes::panes::focus),
         )
+        .route(
+            "/api/v1/sessions/{id}/windows",
+            axum::routing::get(routes::windows::list).post(routes::windows::create),
+        )
+        .route(
+            "/api/v1/sessions/{id}/windows/{window_id}",
+            axum::routing::delete(routes::windows::close),
+        )
+        .route(
+            "/api/v1/sessions/{id}/windows/{window_id}/title",
+            axum::routing::patch(routes::windows::rename),
+        )
+        .route(
+            "/api/v1/sessions/{id}/windows/{window_id}/focus",
+            axum::routing::post(routes::windows::focus),
+        )
         .fallback_service(ServeDir::new(
             std::env::var("TERM2_WEB_DIR").unwrap_or_else(|_| "web".to_string()),
         ))
