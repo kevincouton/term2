@@ -5,7 +5,7 @@ Tracker for the multi-phase roadmap defined in [`ROADMAP.md`](./ROADMAP.md).
 | Phase | Name | Status | Notes |
 |-------|------|--------|-------|
 | 1 | Native PTY Backend | **Complete** | Native Rust PTY is the default; `TERM2_BACKEND=tmux` remains as a legacy fallback. Native restart survival means the session remains listed and its child process stays alive; full re-attach with scrollback replay across restarts requires Phase 1.5/2 work or the tmux fallback. |
-| 2 | Windows, Panes, and Tiling | **In progress** | Vertical slice: one window per session, binary split layout, pane CRUD/focus APIs, active-pane WebSocket routing. |
+| 2 | Windows, Panes, and Tiling | **In progress** | Tabbed windows implemented: multiple windows per session with `TabColor`, active window tracking, window CRUD/focus APIs, active-window WebSocket routing, and keybinding actions. Pane tiling and CRUD remain in place. |
 | 3 | AI Command Palette & Agents | Not started | — |
 | 4 | Blocks, Notebooks, and Warp Drive | Not started | — |
 | 5 | Collaborative Sessions | Not started | — |
@@ -37,4 +37,14 @@ Tracker for the multi-phase roadmap defined in [`ROADMAP.md`](./ROADMAP.md).
 - [x] Session WebSocket attaches to active pane
 - [x] Pane keybinding actions added to defaults
 - [x] `api/tests/pane_flow.rs` integration tests pass
+- [x] `cargo test --workspace --all-features` passes
+
+## Phase 2 tabbed windows checklist
+
+- [x] `Window` has `session_id` and `TabColor`
+- [x] `SessionRuntime` holds `Vec<Window>` and `active_window_id`
+- [x] Window tab CRUD and focus APIs
+- [x] Session WebSocket routes to active window's active pane
+- [x] Window keybinding actions
+- [x] `api/tests/window_flow.rs` integration tests pass
 - [x] `cargo test --workspace --all-features` passes
