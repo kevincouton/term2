@@ -49,7 +49,7 @@ pub struct Session {
     pub output: ReplaySender,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
     pub id: String,
     pub name: String,

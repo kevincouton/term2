@@ -21,7 +21,7 @@ pub struct Window {
     scrollback_root: PathBuf,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WindowInfo {
     pub id: String,
     pub session_id: String,
