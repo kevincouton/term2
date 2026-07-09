@@ -26,6 +26,7 @@ pub struct WindowInfo {
     pub id: String,
     pub session_id: String,
     pub title: String,
+    #[serde(default)]
     pub color: Option<crate::TabColor>,
     pub active_pane_id: String,
     pub is_focused: bool,

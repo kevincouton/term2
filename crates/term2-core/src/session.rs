@@ -56,9 +56,9 @@ pub struct SessionInfo {
     pub profile: String,
     pub created_at: u64,
     pub attached: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_pane_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_window_id: Option<String>,
 }
 
@@ -654,32 +654,41 @@ impl SessionManager {
             ));
         }
         let window_id = uuid::Uuid::new_v4().to_string();
-        let mut sessions = self.sessions.write().await;
-        let runtime = sessions
-            .get_mut(session_id)
-            .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+        let runtime_name = {
+            let sessions = self.sessions.write().await;
+            let runtime = sessions
+                .get(session_id)
+                .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+            runtime.name.clone()
+        };
         let scrollback_dir = self.scrollback_root.join(session_id).join(&window_id);
         let window = crate::Window::new(
             session_id,
             &window_id,
-            &runtime.name,
+            &runtime_name,
             profile,
             registry,
             scrollback_dir,
         )?;
         let info = window.info(true);
-        runtime.windows.push(window);
-        runtime.active_window_id = window_id;
+        {
+            let mut sessions = self.sessions.write().await;
+            let runtime = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| Error::SessionNotFound(session_id.to_string()))?;
+            runtime.windows.push(window);
+            runtime.active_window_id = window_id;
+        }
         Ok(info)
     }
 
-    pub async fn close_window(&self, user: &str, session_id: &str, window_id: &str) -> Result<()> {
+    pub async fn close_window(&self, _user: &str, session_id: &str, window_id: &str) -> Result<()> {
         if self.backend != Backend::Native {
             return Err(Error::BackendNotSupported(
                 "window operations require native backend".to_string(),
             ));
         }
-        let should_terminate_session = {
+        let (window, is_last) = {
             let mut sessions = self.sessions.write().await;
             let runtime = sessions
                 .get_mut(session_id)
@@ -690,18 +699,21 @@ impl SessionManager {
                 .position(|w| w.id == window_id)
                 .ok_or_else(|| Error::SessionNotFound(window_id.to_string()))?;
             let window = runtime.windows.remove(idx);
-            window.kill_all_panes().await?;
-            if runtime.windows.is_empty() {
-                true
-            } else {
-                if runtime.active_window_id == window_id {
-                    runtime.active_window_id = runtime.windows[0].id.clone();
-                }
-                false
+            let is_last = runtime.windows.is_empty();
+            if is_last {
+                sessions.remove(session_id);
+            } else if runtime.active_window_id == window_id {
+                runtime.active_window_id = runtime.windows[0].id.clone();
             }
+            (window, is_last)
         };
-        if should_terminate_session {
-            self.terminate(user, session_id).await?;
+
+        window.kill_all_panes().await?;
+
+        if is_last {
+            let mut known = self.known.write().await;
+            known.remove(session_id);
+            let _ = save_store(&self.store, &known);
         }
         Ok(())
     }
