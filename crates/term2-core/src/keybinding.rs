@@ -111,7 +111,10 @@ pub fn default_keybindings() -> KeybindingSet {
         Shortcut::parse("CMD-DOWN").unwrap(),
         "terminal:select_next_block",
     );
-    kb.bind(Shortcut::parse("CMD-T").unwrap(), "workspace:open_new_tab");
+    kb.bind(Shortcut::parse("CMD-T").unwrap(), "window:new");
+    kb.bind(Shortcut::parse("CMD-SHIFT-]").unwrap(), "window:next");
+    kb.bind(Shortcut::parse("CMD-SHIFT-[").unwrap(), "window:prev");
+    kb.bind(Shortcut::parse("CMD-SHIFT-W").unwrap(), "window:close");
     kb.bind(
         Shortcut::parse("CMD-1").unwrap(),
         "workspace:activate_first_tab",
@@ -247,6 +250,27 @@ mod tests {
         kb.bind(shortcut.clone(), "old");
         kb.bind(shortcut.clone(), "new");
         assert_eq!(kb.action_for(&shortcut), Some("new"));
+    }
+
+    #[test]
+    fn window_actions_are_bound() {
+        let kb = default_keybindings();
+        assert_eq!(
+            kb.action_for(&Shortcut::parse("CMD-T").unwrap()),
+            Some("window:new")
+        );
+        assert_eq!(
+            kb.action_for(&Shortcut::parse("CMD-SHIFT-]").unwrap()),
+            Some("window:next")
+        );
+        assert_eq!(
+            kb.action_for(&Shortcut::parse("CMD-SHIFT-[").unwrap()),
+            Some("window:prev")
+        );
+        assert_eq!(
+            kb.action_for(&Shortcut::parse("CMD-SHIFT-W").unwrap()),
+            Some("window:close")
+        );
     }
 
     // Warp-derived scenarios:
