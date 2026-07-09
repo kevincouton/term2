@@ -351,7 +351,7 @@ impl SessionManager {
                     profile: metadata.profile.clone(),
                     created_at: metadata.created_at,
                     attached: false,
-                    active_pane_id: None, // filled below if runtime exists
+                    active_pane_id: None,   // filled below if runtime exists
                     active_window_id: None, // filled below if runtime exists
                 });
             } else {
@@ -380,7 +380,11 @@ impl SessionManager {
             for info in &mut infos {
                 if let Some(runtime) = sessions.get(&info.id) {
                     info.active_window_id = Some(runtime.active_window_id.clone());
-                    if let Some(window) = runtime.windows.iter().find(|w| w.id == runtime.active_window_id) {
+                    if let Some(window) = runtime
+                        .windows
+                        .iter()
+                        .find(|w| w.id == runtime.active_window_id)
+                    {
                         info.active_pane_id = Some(window.active_pane_id.clone());
                     }
                 }
@@ -616,7 +620,11 @@ impl SessionManager {
         .await
     }
 
-    pub async fn list_windows(&self, _user: &str, session_id: &str) -> Result<Vec<crate::WindowInfo>> {
+    pub async fn list_windows(
+        &self,
+        _user: &str,
+        session_id: &str,
+    ) -> Result<Vec<crate::WindowInfo>> {
         if self.backend != Backend::Native {
             return Err(Error::BackendNotSupported(
                 "window operations require native backend".to_string(),
@@ -665,12 +673,7 @@ impl SessionManager {
         Ok(info)
     }
 
-    pub async fn close_window(
-        &self,
-        user: &str,
-        session_id: &str,
-        window_id: &str,
-    ) -> Result<()> {
+    pub async fn close_window(&self, user: &str, session_id: &str, window_id: &str) -> Result<()> {
         if self.backend != Backend::Native {
             return Err(Error::BackendNotSupported(
                 "window operations require native backend".to_string(),
@@ -728,12 +731,7 @@ impl SessionManager {
         Ok(())
     }
 
-    pub async fn focus_window(
-        &self,
-        _user: &str,
-        session_id: &str,
-        window_id: &str,
-    ) -> Result<()> {
+    pub async fn focus_window(&self, _user: &str, session_id: &str, window_id: &str) -> Result<()> {
         if self.backend != Backend::Native {
             return Err(Error::BackendNotSupported(
                 "window operations require native backend".to_string(),
@@ -1429,7 +1427,10 @@ mod tests {
         assert_eq!(windows.len(), 1);
         assert_eq!(windows[0].id, info.active_window_id.unwrap());
 
-        manager.terminate("window-test-user", &info.id).await.unwrap();
+        manager
+            .terminate("window-test-user", &info.id)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1462,7 +1463,10 @@ mod tests {
         assert!(windows.iter().any(|w| w.id == new_window.id));
         assert!(new_window.is_focused);
 
-        manager.terminate("create-window-user", &info.id).await.unwrap();
+        manager
+            .terminate("create-window-user", &info.id)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1486,10 +1490,7 @@ mod tests {
             .list_windows("focus-window-user", &info.id)
             .await
             .unwrap();
-        assert_eq!(
-            windows.iter().find(|w| w.is_focused).unwrap().id,
-            second.id
-        );
+        assert_eq!(windows.iter().find(|w| w.is_focused).unwrap().id, second.id);
 
         manager
             .focus_window("focus-window-user", &info.id, &first_id)
@@ -1502,7 +1503,10 @@ mod tests {
             .unwrap();
         assert_eq!(windows.iter().find(|w| w.is_focused).unwrap().id, first_id);
 
-        manager.terminate("focus-window-user", &info.id).await.unwrap();
+        manager
+            .terminate("focus-window-user", &info.id)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1535,7 +1539,10 @@ mod tests {
         assert_eq!(windows[0].id, first_id);
         assert!(windows[0].is_focused);
 
-        manager.terminate("close-window-user", &info.id).await.unwrap();
+        manager
+            .terminate("close-window-user", &info.id)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1545,7 +1552,12 @@ mod tests {
         let profile = registry.get("bash").unwrap();
 
         let info = manager
-            .create("close-last-window-user", "close-last-window", &profile, &registry)
+            .create(
+                "close-last-window-user",
+                "close-last-window",
+                &profile,
+                &registry,
+            )
             .await
             .unwrap();
         let window_id = info.active_window_id.unwrap();
@@ -1582,7 +1594,10 @@ mod tests {
             .unwrap();
         assert_eq!(windows[0].title, "renamed-title");
 
-        manager.terminate("rename-window-user", &info.id).await.unwrap();
+        manager
+            .terminate("rename-window-user", &info.id)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

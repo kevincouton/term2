@@ -34,7 +34,11 @@ pub async fn create(
 ) -> Result<Json<term2_core::WindowInfo>, StatusCode> {
     let registry = state.registry_for(&user.id);
     let profile_name = {
-        let sessions = state.sessions.list(&user.id).await.map_err(|e| map_error(e, "list sessions"))?;
+        let sessions = state
+            .sessions
+            .list(&user.id)
+            .await
+            .map_err(|e| map_error(e, "list sessions"))?;
         sessions
             .into_iter()
             .find(|s| s.id == id)

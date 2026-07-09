@@ -2,6 +2,12 @@ use std::time::Duration;
 
 use tokio::net::TcpListener;
 
+fn backend_is_tmux() -> bool {
+    std::env::var("TERM2_BACKEND")
+        .map(|v| v.eq_ignore_ascii_case("tmux"))
+        .unwrap_or(false)
+}
+
 async fn spawn_test_server() -> (String, reqwest::Client) {
     let state = std::sync::Arc::new(term2_api::state::AppState::new());
     let app = term2_api::app::create(state);
@@ -41,6 +47,9 @@ async fn create_bash_session(addr: &str, client: &reqwest::Client) -> (String, S
 
 #[tokio::test]
 async fn create_window_adds_tab() {
+    if backend_is_tmux() {
+        return;
+    }
     let (addr, client) = spawn_test_server().await;
     let (session_id, first_window_id, _) = create_bash_session(&addr, &client).await;
 
@@ -80,6 +89,9 @@ async fn create_window_adds_tab() {
 
 #[tokio::test]
 async fn close_window_removes_tab_and_keeps_session() {
+    if backend_is_tmux() {
+        return;
+    }
     let (addr, client) = spawn_test_server().await;
     let (session_id, first_window_id, _) = create_bash_session(&addr, &client).await;
 
@@ -122,6 +134,9 @@ async fn close_window_removes_tab_and_keeps_session() {
 
 #[tokio::test]
 async fn close_last_window_terminates_session() {
+    if backend_is_tmux() {
+        return;
+    }
     let (addr, client) = spawn_test_server().await;
     let (session_id, window_id, _) = create_bash_session(&addr, &client).await;
 
@@ -145,6 +160,9 @@ async fn close_last_window_terminates_session() {
 
 #[tokio::test]
 async fn rename_and_focus_window() {
+    if backend_is_tmux() {
+        return;
+    }
     let (addr, client) = spawn_test_server().await;
     let (session_id, first_window_id, _) = create_bash_session(&addr, &client).await;
 
