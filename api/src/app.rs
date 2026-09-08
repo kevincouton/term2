@@ -8,6 +8,10 @@ use crate::{routes, state::AppState};
 pub fn create(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", axum::routing::get(routes::health::health))
+        .route(
+            "/api/v1/config",
+            axum::routing::get(routes::health::web_config),
+        )
         .route("/api/v1/me", axum::routing::get(routes::health::me))
         .route(
             "/api/v1/profiles",

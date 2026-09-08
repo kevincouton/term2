@@ -49,3 +49,27 @@ async fn me_returns_fallback_user() {
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["id"], "dev");
 }
+
+#[tokio::test]
+async fn config_reports_empty_sentry_dsn_when_unset() {
+    let state = Arc::new(term2_api::state::AppState::new());
+    let app = term2_api::app::create(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://{addr}/api/v1/config"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert!(body.get("sentryDsn").is_some());
+}
