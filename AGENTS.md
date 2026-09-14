@@ -9,7 +9,7 @@ Term2 is a Rust-first web terminal multiplexer inspired by Warp's UX. The Androi
 - portable-pty (cross-platform PTY)
 - xterm.js (web terminal UI)
 - Authentik forward-auth via Caddy
-- cargo-audit, cargo-deny, clippy, semgrep (SAST)
+- cargo-audit, cargo-deny, clippy, semgrep (SAST), gitleaks (secrets), zizmor (Actions audit)
 
 ## Build
 ```bash
