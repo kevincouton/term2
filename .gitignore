@@ -16,3 +16,5 @@ node_modules
 /android/local.properties
 /android/*.iml
 /android/.idea
+.output/
+dist/
