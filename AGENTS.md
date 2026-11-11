@@ -1,5 +1,7 @@
 # Term2 — Agent Guide
 
+Rust style: see [RUST_STYLE.md](RUST_STYLE.md) (Google Rust Style Guide house standard).
+
 ## Project
 Term2 is a Rust-first web terminal multiplexer inspired by Warp's UX. The Android app is currently paused.
 

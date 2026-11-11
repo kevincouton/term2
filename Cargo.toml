@@ -35,3 +35,11 @@ lto = "thin"
 
 [profile.dev]
 debug = "line-tables-only"
+
+[workspace.lints.clippy]
+# Google Rust Style Guide-aligned lints (see RUST_STYLE.md).
+wildcard_imports = "warn"
+uninlined_format_args = "warn"
+implicit_clone = "warn"
+redundant_field_names = "warn"
+ptr_arg = "warn"

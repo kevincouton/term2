@@ -1315,8 +1315,7 @@ mod tests {
             .await;
         assert!(
             matches!(result, Err(Error::InvalidName(ref name)) if name.is_empty()),
-            "expected InvalidName with empty sanitized name, got {:?}",
-            result
+            "expected InvalidName with empty sanitized name, got {result:?}"
         );
     }
 
@@ -1762,8 +1761,7 @@ mod tests {
             .await;
         assert!(
             matches!(result, Err(Error::InvalidName(ref name)) if name.is_empty()),
-            "expected InvalidName with empty sanitized name, got {:?}",
-            result
+            "expected InvalidName with empty sanitized name, got {result:?}"
         );
     }
 

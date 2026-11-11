@@ -152,7 +152,7 @@ impl Notebook {
                 }
                 NotebookCell::List { items } => {
                     for item in items {
-                        md.push_str(&format!("- {}\n", item));
+                        md.push_str(&format!("- {item}\n"));
                     }
                     md.push('\n');
                 }
@@ -269,7 +269,7 @@ impl EnvVarSet {
         let mut out = String::new();
         for v in &self.variables {
             if let EnvVar::Static { key, value } = v {
-                out.push_str(&format!("{}={}\n", key, value));
+                out.push_str(&format!("{key}={value}\n"));
             }
         }
         out
@@ -332,12 +332,12 @@ impl WarpDrive {
             if name.to_lowercase().contains(&q)
                 || wf.tags.iter().any(|t| t.to_lowercase().contains(&q))
             {
-                results.push(format!("workflow:{}", name));
+                results.push(format!("workflow:{name}"));
             }
         }
         for name in self.notebooks.keys() {
             if name.to_lowercase().contains(&q) {
-                results.push(format!("notebook:{}", name));
+                results.push(format!("notebook:{name}"));
             }
         }
         for (name, p) in &self.prompts {
@@ -348,7 +348,7 @@ impl WarpDrive {
                     .unwrap_or_default()
                     .contains(&q)
             {
-                results.push(format!("prompt:{}", name));
+                results.push(format!("prompt:{name}"));
             }
         }
         results

@@ -36,3 +36,6 @@ sentry-tracing = "0.49.2"
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+
+[lints]
+workspace = true
